@@ -1,0 +1,306 @@
+#!/bin/bash
+set -euo pipefail
+
+# Network can flap briefly while the Elastic IP replaces the boot-time IP
+for attempt in 1 2 3 4 5; do
+  if dnf update -y && dnf install -y docker git unzip; then
+    break
+  fi
+  echo "dnf attempt $attempt failed; retrying in 15s" >&2
+  sleep 15
+done
+command -v docker >/dev/null 2>&1 || { echo "docker install failed" >&2; exit 1; }
+
+# Bound container log growth (disk-full is an outage risk on a fixed disk)
+mkdir -p /etc/docker
+cat >/etc/docker/daemon.json <<'JSON'
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+JSON
+
+systemctl enable --now docker
+usermod -aG docker ec2-user || true
+
+# Compose v2 plugin (AL2023 package when available, else GitHub binary)
+if dnf install -y docker-compose-plugin; then
+  true
+else
+  mkdir -p /usr/local/lib/docker/cli-plugins
+  curl -fsSL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-aarch64" \
+    -o /usr/local/lib/docker/cli-plugins/docker-compose
+  chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+  mkdir -p /usr/libexec/docker/cli-plugins
+  ln -sfn /usr/local/lib/docker/cli-plugins/docker-compose /usr/libexec/docker/cli-plugins/docker-compose
+fi
+
+APP_DIR=/opt/template
+rm -rf "$APP_DIR"
+mkdir -p "$APP_DIR"
+
+# Fetch origin secret from Secrets Manager via the instance role
+# (keeps the secret out of user-data, which is readable via the EC2 API)
+command -v aws >/dev/null 2>&1 || dnf install -y awscli
+IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+AWS_REGION=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
+ORIGIN_HEADER_VALUE=$(aws secretsmanager get-secret-value \
+  --secret-id "${origin_secret_arn}" \
+  --region "$AWS_REGION" \
+  --query SecretString --output text)
+
+cat >"$APP_DIR/.env" <<EOF
+APP_ENV=${environment}
+APP_NAME=template
+ORIGIN_HEADER_VALUE=$ORIGIN_HEADER_VALUE
+SKIP_ORIGIN_CHECK=0
+EOF
+chmod 600 "$APP_DIR/.env"
+
+%{ if app_git_url != "" ~}
+git clone --depth 1 "${app_git_url}" "$APP_DIR/repo"
+# Support either repo root or nested layout
+if [ -f "$APP_DIR/repo/deploy/docker-compose.yml" ]; then
+  ln -sfn "$APP_DIR/repo/deploy" "$APP_DIR/deploy"
+  ln -sfn "$APP_DIR/repo/apps" "$APP_DIR/apps"
+elif [ -f "$APP_DIR/repo/docker-compose.yml" ]; then
+  ln -sfn "$APP_DIR/repo" "$APP_DIR/deploy"
+else
+  echo "No docker-compose.yml found in cloned repo" >&2
+  exit 1
+fi
+WORK_DIR="$APP_DIR/deploy"
+%{ else ~}
+# Bootstrap stack so CloudFront shows a live page before git is configured
+mkdir -p "$APP_DIR/deploy/gateway" "$APP_DIR/apps/backend" "$APP_DIR/apps/frontend/dist"
+WORK_DIR="$APP_DIR/deploy"
+
+cat >"$WORK_DIR/docker-compose.yml" <<'COMPOSE'
+services:
+  gateway:
+    build: ./gateway
+    ports: ["80:80"]
+    environment:
+      ORIGIN_HEADER_VALUE: $${ORIGIN_HEADER_VALUE}
+      SKIP_ORIGIN_CHECK: "0"
+    depends_on: [api, web]
+    restart: unless-stopped
+  api:
+    image: node:20-alpine
+    working_dir: /app
+    command: ["node", "server.mjs"]
+    volumes: ["../apps/backend/server.mjs:/app/server.mjs:ro"]
+    environment:
+      PORT: "3000"
+      APP_ENV: $${APP_ENV}
+      APP_NAME: template
+    expose: ["3000"]
+    restart: unless-stopped
+  web:
+    image: nginx:1.27-alpine
+    volumes: ["../apps/frontend/dist:/usr/share/nginx/html:ro"]
+    expose: ["80"]
+    restart: unless-stopped
+COMPOSE
+
+cat >"$WORK_DIR/gateway/Dockerfile" <<'DF'
+FROM nginx:1.27-alpine
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+ENV ORIGIN_HEADER_VALUE=changeme
+ENV SKIP_ORIGIN_CHECK=0
+EXPOSE 80
+DF
+
+cat >"$WORK_DIR/gateway/nginx.conf.template" <<'NGX'
+server {
+  listen 80;
+  server_tokens off;
+  set $origin_ok 0;
+  if ($http_x_origin_verify = "$${ORIGIN_HEADER_VALUE}") { set $origin_ok 1; }
+  if ($origin_ok = 0) { return 403; }
+  location /api/ {
+    proxy_pass http://api:3000/api/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+  }
+  location / {
+    proxy_pass http://web:80/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+  }
+}
+NGX
+
+cat >"$APP_DIR/apps/backend/server.mjs" <<'JS'
+import http from "node:http";
+const port = Number(process.env.PORT || 3000);
+const environment = process.env.APP_ENV || "dev";
+const appName = process.env.APP_NAME || "template";
+const send = (res, code, body) => {
+  res.writeHead(code, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
+};
+http.createServer((req, res) => {
+  if (req.url === "/api/health") {
+    return send(res, 200, { ok: true, service: "api", app: appName, environment, time: new Date().toISOString() });
+  }
+  if (req.url === "/api/info") {
+    return send(res, 200, {
+      app: appName,
+      environment,
+      message: "Secure cost-predictable hosting stack is running on Docker.",
+      stack: { backend: "Node.js bootstrap", frontend: "Static HTML bootstrap", runtime: "Docker Compose on EC2" },
+    });
+  }
+  send(res, 404, { ok: false, error: "Not found" });
+}).listen(port, "0.0.0.0");
+JS
+
+cat >"$APP_DIR/apps/frontend/dist/index.html" <<'HTML'
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>template</title>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@700&family=Syne:wght@500;700&display=swap" rel="stylesheet" />
+  <style>
+    body{margin:0;font-family:Syne,sans-serif;color:#12201c;background:linear-gradient(160deg,#f7f3ea,#e7efe8);min-height:100vh}
+    main{max-width:40rem;padding:2rem}
+    .brand{font-family:Fraunces,serif;font-size:3rem;margin:0 0 2rem}
+    h1{font-family:Fraunces,serif;font-size:clamp(2.4rem,7vw,4rem);margin:0 0 .75rem}
+    .card{margin-top:1.5rem;padding:1rem 1.2rem;background:rgba(255,255,255,.7);border:1px solid rgba(18,32,28,.12)}
+    li{display:flex;justify-content:space-between;gap:1rem;padding:.55rem 0;border-top:1px solid rgba(18,32,28,.1)}
+    li:first-child{border-top:0}
+    .ok{color:#1f6f54;font-weight:700}
+  </style>
+</head>
+<body>
+  <main>
+    <p class="brand">template</p>
+    <h1>Running on Docker.</h1>
+    <p>EC2 bootstrap UI. Set app_git_url to deploy the full React + TypeScript apps.</p>
+    <div class="card"><h2>API status</h2><ul id="status"><li>Loading…</li></ul></div>
+  </main>
+  <script>
+    async function load(){
+      const el=document.getElementById("status");
+      try{
+        const [h,i]=await Promise.all([fetch("/api/health"),fetch("/api/info")]);
+        const health=await h.json(); const info=await i.json();
+        el.innerHTML=`<li><span>App</span><strong>$${health.app}</strong></li><li><span>Env</span><strong>$${health.environment}</strong></li><li><span>Health</span><strong class="ok">$${health.ok?"ok":"down"}</strong></li><li><span>Msg</span><strong>$${info.message}</strong></li>`;
+      }catch(e){el.innerHTML=`<li>API error: $${e.message}</li>`;}
+    }
+    load(); setInterval(load,15000);
+  </script>
+</body>
+</html>
+HTML
+%{ endif ~}
+
+cp "$APP_DIR/.env" "$WORK_DIR/.env"
+cd "$WORK_DIR"
+docker compose --env-file "$APP_DIR/.env" up -d --build
+
+%{ if origin_fqdn != "" ~}
+# ---------------------------------------------------------------------------
+# TLS for CloudFront -> origin (https-only). Let's Encrypt via DNS-01 (the SG
+# blocks HTTP-01), terminated by host nginx in front of the Docker gateway.
+# ---------------------------------------------------------------------------
+dnf install -y nginx python3 python3-pip augeas-libs
+python3 -m venv /opt/certbot
+/opt/certbot/bin/pip install --quiet --upgrade pip
+/opt/certbot/bin/pip install --quiet certbot certbot-dns-route53
+
+# Requires the registrar's nameservers to already point at Route 53
+CERT_OK=0
+for attempt in 1 2 3 4 5; do
+  if /opt/certbot/bin/certbot certonly --dns-route53 \
+      -d "${origin_fqdn}" \
+      --non-interactive --agree-tos -m "${certbot_email}"; then
+    CERT_OK=1
+    break
+  fi
+  echo "certbot attempt $attempt failed; retrying in 60s" >&2
+  sleep 60
+done
+
+if [ "$CERT_OK" = "1" ]; then
+  cat >/etc/nginx/conf.d/origin-tls.conf <<'NGXTLS'
+server {
+  listen 443 ssl;
+  http2 on;
+  server_name ${origin_fqdn};
+  ssl_certificate /etc/letsencrypt/live/${origin_fqdn}/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/${origin_fqdn}/privkey.pem;
+  ssl_protocols TLSv1.2 TLSv1.3;
+  server_tokens off;
+
+  location / {
+    proxy_pass http://127.0.0.1:80;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+}
+NGXTLS
+  systemctl enable --now nginx
+
+  # Renew twice daily; reload nginx when a new cert lands
+  cat >/etc/systemd/system/certbot-renew.service <<'UNIT'
+[Unit]
+Description=Certbot renewal
+
+[Service]
+Type=oneshot
+ExecStart=/opt/certbot/bin/certbot renew --quiet --deploy-hook "systemctl reload nginx"
+UNIT
+
+  cat >/etc/systemd/system/certbot-renew.timer <<'UNIT'
+[Unit]
+Description=Certbot renewal timer
+
+[Timer]
+OnCalendar=*-*-* 02,14:30:00
+RandomizedDelaySec=3600
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+  systemctl daemon-reload
+  systemctl enable --now certbot-renew.timer
+else
+  # Site will be down (CloudFront is https-only): fix NS delegation, then
+  # replace the instance. Deliberately loud in the system log.
+  echo "FATAL: could not obtain certificate for ${origin_fqdn} — is the domain delegated to Route 53?" >&2
+fi
+%{ endif ~}
+
+cat >/etc/systemd/system/template-app.service <<UNIT
+[Unit]
+Description=template Docker Compose app
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=$WORK_DIR
+EnvironmentFile=$APP_DIR/.env
+ExecStart=/usr/bin/docker compose --env-file $APP_DIR/.env up -d --build
+ExecStop=/usr/bin/docker compose --env-file $APP_DIR/.env down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable template-app.service

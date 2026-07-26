@@ -1,0 +1,57 @@
+# Final cost gate — read before terraform apply
+#
+# Account-level stack (infra/global, apply once): ~$1.50–5.50/mo
+#   Terraform state bucket / CloudTrail mgmt events / flow-log storage ... ~$0–1
+#   Route 53 hosted zone (andrei-vataselu.online) ........................ $0.50
+#   GuardDuty (toggleable via enable_guardduty) .......................... ~$1–4
+#   (ACM + Let's Encrypt certs: $0. Domain renewal paid at Namecheap.)
+# Architecture mode: guide "Lower-cost compromise" (shared by DEV + PROD)
+# Same: VPC layout, SG model, WAF, Cognito, encryption, no NAT, no SSH, origin secret, Docker
+# Differs only: instance sizes, CloudFront plan tier, RDS Multi-AZ / deletion protection
+
+# ---------------------------------------------------------------------------
+# A) Preferred guide PROD (private EC2 + CloudFront VPC origin)
+#    REQUIRES CloudFront Business — NOT possible at $25
+# ---------------------------------------------------------------------------
+# CloudFront Business ..................... $200.00
+# VPC interface endpoints (SSM x3, 1 AZ) .. ~$21.60
+# EC2 (fixed) + EBS ....................... ~$10–30
+# Public IPv4 ............................. $0 (none)
+# RDS Single-AZ or Multi-AZ ............... ~$12–50+
+# Secrets / logs / misc ................... ~$2–5
+# TOTAL ................................... ~$245+/mo  ← reject for $25 goal
+
+# ---------------------------------------------------------------------------
+# B) Shared DEV+PROD security architecture (what this repo implements)
+#    CloudFront Free/Pro → public EC2 locked to CloudFront prefix list + origin header
+#    VPC: public app subnet(s) + private DB subnets (2 AZ), no NAT, S3 gateway EP only
+# ---------------------------------------------------------------------------
+# DEV sizes (eu-west-1, on-demand, no free-tier assumed):
+#   CloudFront Free flat-rate ............. $0.00
+#   EC2 t4g.micro (730h × $0.009) ......... $6.57
+#   Public IPv4 (730h × $0.005) ........... $3.65   ← required for this origin model
+#   EBS gp3 30 GB ......................... ~$2.40
+#   RDS db.t4g.micro (730h × $0.016) ...... $11.68
+#   RDS gp3 20 GB ......................... ~$2.30
+#   Secrets Manager (RDS master) .......... $0.40
+#   CloudWatch logs (14d, bounded) ........ ~$1.00
+#   Cognito / SNS / Budgets ............... ~$0–1
+#   -----------------------------------------------
+#   EXPECTED MONTHLY ..................... ~$28–30
+#   HARD ALERT BUDGET .................... $25 (will fire; spend still ~$28–30)
+#   RECOMMENDED INTERNAL CAP ............. $30
+
+# To stay ≤ $25 without free-tier credits you must drop something:
+#   - remove RDS (breaks guide DB), or
+#   - use AWS free-tier eligibility if still active, or
+#   - accept Business path and pay ~$245+
+
+# PROD same architecture, typical next tiers (still NOT Business VPC origin):
+#   CloudFront Pro ........................ $15.00
+#   EC2 t4g.small ......................... ~$13.14
+#   Public IPv4 ........................... $3.65
+#   EBS 40 GB ............................. ~$3.20
+#   RDS db.t4g.small Multi-AZ ............. ~$48+
+#   storage / secrets / logs .............. ~$5
+#   -----------------------------------------------
+#   EXPECTED PROD ......................... ~$88+/mo

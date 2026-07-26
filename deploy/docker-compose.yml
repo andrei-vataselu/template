@@ -1,0 +1,66 @@
+services:
+  gateway:
+    build: ./gateway
+    ports:
+      - "80:8080"
+    environment:
+      ORIGIN_HEADER_VALUE: ${ORIGIN_HEADER_VALUE:-local-dev-secret}
+      SKIP_ORIGIN_CHECK: ${SKIP_ORIGIN_CHECK:-1}
+    depends_on:
+      - api
+      - web
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 128m
+    pids_limit: 100
+
+  api:
+    build: ../apps/backend
+    environment:
+      PORT: "3000"
+      APP_ENV: ${APP_ENV:-dev}
+      APP_NAME: ${APP_NAME:-template}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      NODE_ENV: production
+    expose:
+      - "3000"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 384m
+    pids_limit: 200
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: ../apps/frontend
+    expose:
+      - "8080"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 128m
+    pids_limit: 100
+
+networks:
+  default:
+    name: template_net
