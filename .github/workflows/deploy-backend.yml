@@ -55,8 +55,35 @@ jobs:
 
       - name: Roll ASG (zero-downtime refresh)
         run: |
+          set -euo pipefail
           ASG="${{ env.PROJECT_NAME }}-${{ steps.env.outputs.name }}-app"
-          echo "Refreshing $ASG (main = dev branch)..."
+          echo "Target ASG=$ASG"
+
+          # Latest commit wins — cancel any in-progress refresh (FE+BE can race on main)
+          CUR=$(aws autoscaling describe-instance-refreshes \
+            --auto-scaling-group-name "$ASG" \
+            --region "${{ env.AWS_REGION }}" \
+            --max-records 1 \
+            --query 'InstanceRefreshes[0].Status' --output text 2>/dev/null || echo "None")
+          if [ "$CUR" = "InProgress" ] || [ "$CUR" = "Pending" ] || [ "$CUR" = "Cancelling" ]; then
+            echo "Cancelling existing refresh (status=$CUR)..."
+            aws autoscaling cancel-instance-refresh \
+              --auto-scaling-group-name "$ASG" \
+              --region "${{ env.AWS_REGION }}" || true
+            for i in $(seq 1 36); do
+              S=$(aws autoscaling describe-instance-refreshes \
+                --auto-scaling-group-name "$ASG" \
+                --region "${{ env.AWS_REGION }}" \
+                --max-records 1 \
+                --query 'InstanceRefreshes[0].Status' --output text)
+              echo "  wait $i: $S"
+              case "$S" in
+                Cancelled|Failed|Successful|None) break ;;
+              esac
+              sleep 10
+            done
+          fi
+
           REFRESH_ID=$(aws autoscaling start-instance-refresh \
             --auto-scaling-group-name "$ASG" \
             --region "${{ env.AWS_REGION }}" \
