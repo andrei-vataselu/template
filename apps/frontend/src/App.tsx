@@ -60,7 +60,7 @@ export default function App() {
       </header>
 
       <main className="hero">
-        <h1>Running on Docker.</h1>
+        <h1>Running on Docker — FE deploy probe</h1>
         <p className="lede">
           React + Vite frontend talking to a Node TypeScript API, fronted by
           Nginx on EC2 behind CloudFront.
