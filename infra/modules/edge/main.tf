@@ -179,6 +179,11 @@ resource "aws_wafv2_web_acl" "cloudfront" {
   tags = var.tags
 }
 
+data "aws_cloudfront_cache_policy" "caching_disabled" {
+  provider = aws.us_east_1
+  name     = "Managed-CachingDisabled"
+}
+
 resource "aws_cloudfront_cache_policy" "static" {
   provider = aws.us_east_1
 
@@ -202,29 +207,7 @@ resource "aws_cloudfront_cache_policy" "static" {
   }
 }
 
-resource "aws_cloudfront_cache_policy" "api" {
-  provider = aws.us_east_1
-
-  name        = "${var.project_name}-${var.environment}-api"
-  comment     = "Caching disabled — forward via origin request policy"
-  default_ttl = 0
-  max_ttl     = 0
-  min_ttl     = 0
-
-  parameters_in_cache_key_and_forwarded_to_origin {
-    cookies_config {
-      cookie_behavior = "none"
-    }
-    headers_config {
-      header_behavior = "none"
-    }
-    query_strings_config {
-      query_string_behavior = "none"
-    }
-    enable_accept_encoding_gzip   = true
-    enable_accept_encoding_brotli = true
-  }
-}
+# API uses Managed-CachingDisabled (custom TTL=0 policies reject encoding/header settings).
 
 resource "aws_cloudfront_origin_request_policy" "all_viewer_except_host" {
   provider = aws.us_east_1
@@ -322,7 +305,7 @@ resource "aws_cloudfront_distribution" "this" {
     cached_methods         = ["GET", "HEAD"]
     compress               = true
 
-    cache_policy_id            = aws_cloudfront_cache_policy.api.id
+    cache_policy_id            = data.aws_cloudfront_cache_policy.caching_disabled.id
     origin_request_policy_id   = aws_cloudfront_origin_request_policy.all_viewer_except_host.id
     response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
   }
