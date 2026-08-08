@@ -105,8 +105,10 @@ Workflow is on `main` and **active**.
 | Workflow | How |
 |---|---|
 | [Terraform](.github/workflows/terraform.yml) | Run → `dev`/`prod` × `plan`/`apply` |
-| [Deploy frontend](.github/workflows/deploy-frontend.yml) | Run → build FE image → ASG refresh |
-| [Deploy backend](.github/workflows/deploy-backend.yml) | Run → build BE image → ASG refresh |
+| [Deploy frontend](.github/workflows/deploy-frontend.yml) | **Auto** on push to `main` touching `apps/frontend/**`; manual for prod |
+| [Deploy backend](.github/workflows/deploy-backend.yml) | **Auto** on push to `main` touching `apps/backend/**`; manual for prod |
 | [Terraform destroy (dev only)](.github/workflows/terraform-destroy-dev.yml) | Run → type `destroy-dev` |
+
+`main` = **dev** environment. Prod deploys stay manual (`workflow_dispatch` + `prod` Environment approval).
 
 State: `s3://popo-tfstate-<ACCOUNT_ID>/{dev,prod}/terraform.tfstate` (global is account bootstrap, not these workflows).

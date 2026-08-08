@@ -1,11 +1,16 @@
 name: Deploy frontend
 
-# Manual — build frontend image, then roll ASG (instances git-pull + compose rebuild)
+# Auto on main (dev) when frontend changes; manual for any env
 on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/frontend/**"
+      - ".github/workflows/deploy-frontend.yml"
   workflow_dispatch:
     inputs:
       environment:
-        description: "Target environment"
+        description: "Target environment (manual only; push to main always deploys dev)"
         required: true
         type: choice
         default: dev
@@ -23,9 +28,9 @@ env:
 
 jobs:
   deploy:
-    name: frontend → ${{ inputs.environment }}
+    name: frontend → ${{ github.event_name == 'push' && 'dev' || inputs.environment }}
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+    environment: ${{ github.event_name == 'push' && 'dev' || inputs.environment }}
     steps:
       - uses: actions/checkout@v4
 
@@ -39,14 +44,22 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Resolve environment
+        id: env
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "name=dev" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Roll ASG (zero-downtime refresh)
         run: |
-          ASG="${{ env.PROJECT_NAME }}-${{ inputs.environment }}-app"
-          echo "Refreshing $ASG (pulls latest git + rebuilds compose including frontend)..."
+          ASG="${{ env.PROJECT_NAME }}-${{ steps.env.outputs.name }}-app"
+          echo "Refreshing $ASG (main = dev branch)..."
           REFRESH_ID=$(aws autoscaling start-instance-refresh \
             --auto-scaling-group-name "$ASG" \
             --region "${{ env.AWS_REGION }}" \
             --preferences MinHealthyPercentage=100,InstanceWarmup=600,SkipMatching=false \
             --query InstanceRefreshId --output text)
           echo "InstanceRefreshId=$REFRESH_ID"
-          echo "Watch: aws autoscaling describe-instance-refreshes --auto-scaling-group-name $ASG --region ${{ env.AWS_REGION }}"
