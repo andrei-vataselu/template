@@ -1,6 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
+# Swap so npm/docker builds on t4g.micro don't OOM / get ASG-replaced mid-boot
+if [ ! -f /swapfile ]; then
+  fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile swap swap defaults 0 0' >> /etc/fstab
+fi
+
 for attempt in 1 2 3 4 5; do
   if dnf update -y && dnf install -y docker git unzip; then
     break
@@ -189,6 +198,8 @@ HTML
 
 cp "$APP_DIR/.env" "$WORK_DIR/.env"
 cd "$WORK_DIR"
+# Serialize builds — parallel npm on 1GB RAM OOMs and leaves ALB unhealthy
+export COMPOSE_PARALLEL_LIMIT=1
 docker compose --env-file "$APP_DIR/.env" up -d --build
 
 cat >/etc/systemd/system/template-app.service <<UNIT

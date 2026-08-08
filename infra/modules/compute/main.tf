@@ -166,7 +166,8 @@ resource "aws_autoscaling_group" "app" {
   max_size                  = var.asg_max_size
   desired_capacity          = var.asg_desired_capacity
   health_check_type         = "ELB"
-  health_check_grace_period = 300
+  # First boot: dnf + docker image builds on t4g.micro often take 15–25m
+  health_check_grace_period = 1800
   target_group_arns         = [aws_lb_target_group.app.arn]
 
   # Zero-downtime default for terraform-driven capacity / LT changes
