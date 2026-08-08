@@ -10,7 +10,8 @@ instance_type            = "t4g.micro"
 db_instance_class        = "db.t4g.micro"
 root_volume_gb           = 30
 db_storage_gb            = 20
-backup_retention_days    = 3
+# Free-tier accounts: max backup retention is 1 day until billing plan is upgraded.
+backup_retention_days    = 1
 db_multi_az              = false
 db_deletion_protection   = false
 db_skip_final_snapshot   = true

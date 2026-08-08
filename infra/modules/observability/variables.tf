@@ -5,6 +5,11 @@ variable "monthly_budget_usd" {
   default = 25
 }
 variable "alert_email" { type = string }
+variable "enable_anomaly_detection" {
+  description = "CE dimensional anomaly monitors are limited per account; disable if quota is exhausted."
+  type        = bool
+  default     = false
+}
 variable "asg_name" { type = string }
 variable "alb_arn_suffix" {
   description = "ALB ARN suffix for CloudWatch dimensions (aws_lb.xxx.arn_suffix)"

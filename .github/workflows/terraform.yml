@@ -73,14 +73,30 @@ jobs:
         run: |
           cp terraform.tfvars.example terraform.tfvars
           if [ -n "${{ vars.ALERT_EMAIL }}" ]; then
-            sed -i 's/alert_email.*/alert_email = "${{ vars.ALERT_EMAIL }}"/' terraform.tfvars
+            sed -i 's/^alert_email.*/alert_email = "${{ vars.ALERT_EMAIL }}"/' terraform.tfvars
           fi
           if [ -n "${{ vars.DOMAIN_NAME }}" ] && grep -q 'domain_name' terraform.tfvars; then
-            sed -i 's/domain_name.*/domain_name = "${{ vars.DOMAIN_NAME }}"/' terraform.tfvars
+            sed -i 's/^domain_name.*/domain_name = "${{ vars.DOMAIN_NAME }}"/' terraform.tfvars
           fi
           if [ -n "${{ vars.APP_GIT_URL }}" ] && grep -q 'app_git_url' terraform.tfvars; then
-            sed -i "s|app_git_url.*|app_git_url = \"${{ vars.APP_GIT_URL }}\"|" terraform.tfvars
+            sed -i "s|^app_git_url.*|app_git_url = \"${{ vars.APP_GIT_URL }}\"|" terraform.tfvars
           fi
+          if [ -n "${{ vars.ALLOWED_IP_CIDRS }}" ] && grep -q 'allowed_ip_cidrs' terraform.tfvars; then
+            # e.g. 81.196.154.44/32 or 1.2.3.4/32,5.6.7.8/32
+            IPS='${{ vars.ALLOWED_IP_CIDRS }}'
+            TF_LIST=$(echo "$IPS" | awk -F',' '{
+              printf "["
+              for (i=1; i<=NF; i++) {
+                gsub(/^ +| +$/, "", $i)
+                printf "\"%s\"", $i
+                if (i<NF) printf ", "
+              }
+              printf "]"
+            }')
+            sed -i "s|^allowed_ip_cidrs.*|allowed_ip_cidrs = ${TF_LIST}|" terraform.tfvars
+          fi
+          echo "----- terraform.tfvars (redacted secrets N/A) -----"
+          cat terraform.tfvars
 
       - name: Terraform validate
         working-directory: ${{ steps.paths.outputs.dir }}

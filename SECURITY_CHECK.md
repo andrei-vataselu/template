@@ -23,7 +23,7 @@ Dev scores higher: WAF IP allowlist locks the site to your IP. Prod is public an
 | ✅ | GitHub Variables + Environments; prod required reviewer |
 | ✅ | Root MFA on; no root access keys; password policy; `andrei-cli` admin + RequireMFA |
 | ⬜ | Finish `andrei-cli` MFA + stop daily root *(deferred — optional)* |
-| ⬜ | Commit + push workflow; first pipeline plan |
+| ✅ | Commit + push workflow; Actions workflow **Terraform** is active |
 | ⬜ | Dev apply + CloudFront Free |
 
 ---

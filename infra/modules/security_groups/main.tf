@@ -38,15 +38,8 @@ resource "aws_security_group" "db" {
 }
 
 # --- ALB ingress (CloudFront edge only) ---
-
-resource "aws_vpc_security_group_ingress_rule" "alb_http_from_cloudfront" {
-  security_group_id = aws_security_group.alb.id
-  description       = "HTTP from CloudFront (fallback when no ACM cert)"
-  from_port         = 80
-  to_port           = 80
-  ip_protocol       = "tcp"
-  prefix_list_id    = data.aws_ec2_managed_prefix_list.cloudfront.id
-}
+# CloudFront managed prefix list uses ~55 rule slots. Default SG quota is 60,
+# so only ONE PL-backed rule fits (HTTPS). HTTP is unused when origin is https-only.
 
 resource "aws_vpc_security_group_ingress_rule" "alb_https_from_cloudfront" {
   security_group_id = aws_security_group.alb.id

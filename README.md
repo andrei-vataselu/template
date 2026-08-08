@@ -29,8 +29,8 @@ Secure, cost-predictable AWS hosting for a **React + Vite + Tailwind** frontend 
 | ✅ | Namecheap NS → Route 53 (`awsdns-*`) |
 | ✅ | GitHub Variables + Environments `dev`/`prod` (prod requires reviewer) |
 | ✅ | IAM: `andrei-cli` + `popo-admins` + RequireMFA; root MFA already on |
+| ✅ | Commit + push — Terraform workflow active on GitHub |
 | ⬜ | Switch to `andrei-cli` MFA *(deferred — optional)* |
-| ⬜ | Commit + push workflow/infra (Actions not live on remote yet) |
 | ⬜ | Apply **dev** (~$52–55/mo) + CloudFront Free plan |
 
 ---

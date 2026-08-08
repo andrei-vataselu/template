@@ -110,7 +110,8 @@ Repo → **Settings → Secrets and variables → Actions → Variables**:
 
 Environments: `dev` + `prod` (prod has **required reviewer** `andrei-vataselu`).
 
-**Blocker:** commit + push `.github/workflows/terraform.yml` (and infra) before Actions can run — still local-only unless you already pushed.
+Workflow is on `main` and **active** (Actions → Terraform).
+
 
 Workflow: [`.github/workflows/terraform.yml`](.github/workflows/terraform.yml) — **manual only**.
 

@@ -58,16 +58,20 @@ resource "aws_budgets_budget" "monthly" {
 }
 
 resource "aws_ce_anomaly_monitor" "application" {
+  count = var.enable_anomaly_detection ? 1 : 0
+
   name              = "${var.project_name}-${var.environment}"
   monitor_type      = "DIMENSIONAL"
   monitor_dimension = "SERVICE"
 }
 
 resource "aws_ce_anomaly_subscription" "application" {
+  count = var.enable_anomaly_detection ? 1 : 0
+
   name      = "${var.project_name}-${var.environment}"
   frequency = "DAILY"
 
-  monitor_arn_list = [aws_ce_anomaly_monitor.application.arn]
+  monitor_arn_list = [aws_ce_anomaly_monitor.application[0].arn]
 
   threshold_expression {
     dimension {

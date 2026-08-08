@@ -310,17 +310,16 @@ resource "aws_accessanalyzer_analyzer" "external" {
 # GitHub Actions OIDC — pipeline can plan/apply without long-lived AWS keys
 # ---------------------------------------------------------------------------
 
-data "tls_certificate" "github" {
-  count = var.enable_github_oidc ? 1 : 0
-  url   = "https://token.actions.githubusercontent.com"
-}
-
 resource "aws_iam_openid_connect_provider" "github" {
   count = var.enable_github_oidc ? 1 : 0
 
   url             = "https://token.actions.githubusercontent.com"
   client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = [data.tls_certificate.github[0].certificates[0].sha1_fingerprint]
+  # Pin known GitHub Actions CA thumbprints (dynamic TLS lookup can lag / drift).
+  thumbprint_list = [
+    "6938fd4d98bab03faadb97b34396831e3780aea1",
+    "1c58a3a8518e8759bf075b76b750d4c7df47eefc",
+  ]
 }
 
 resource "aws_iam_role" "github_terraform" {
@@ -341,8 +340,12 @@ resource "aws_iam_role" "github_terraform" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          # PRs + pushes on this repo only (tighten to ref:refs/heads/main later if you want)
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:*"
+          # Classic: repo:ORG/REPO:...
+          # GitHub nID format: repo:ORG@OWNER_ID/REPO@REPO_ID:environment:dev
+          "token.actions.githubusercontent.com:sub" = [
+            "repo:${var.github_repository}:*",
+            "repo:${split("/", var.github_repository)[0]}@*/${split("/", var.github_repository)[1]}@*:*",
+          ]
         }
       }
     }]
