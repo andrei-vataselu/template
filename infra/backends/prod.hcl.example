@@ -1,0 +1,7 @@
+# Copy to prod.hcl and replace ACCOUNT_ID
+# Then: cd infra/environments/prod && terraform init -backend-config=../../backends/prod.hcl -migrate-state
+bucket       = "popo-tfstate-ACCOUNT_ID"
+key          = "prod/terraform.tfstate"
+region       = "eu-west-1"
+encrypt      = true
+use_lockfile = true

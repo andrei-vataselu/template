@@ -36,3 +36,15 @@ variable "cloudtrail_retention_days" {
   type        = number
   default     = 90
 }
+
+variable "github_repository" {
+  description = "GitHub repo allowed to assume the Terraform CI role via OIDC (owner/name)"
+  type        = string
+  default     = "andrei-vataselu/template"
+}
+
+variable "enable_github_oidc" {
+  description = "Create GitHub Actions OIDC provider + Terraform deploy role"
+  type        = bool
+  default     = true
+}

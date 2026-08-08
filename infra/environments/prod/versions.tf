@@ -1,17 +1,8 @@
 terraform {
-  required_version = ">= 1.10.0" # use_lockfile (S3 native state locking)
+  required_version = ">= 1.10.0"
 
-  # Remote state (README gap #4). Apply infra/global first, replace ACCOUNT_ID
-  # (see the global stack's `tfstate_bucket` output), uncomment, then run:
-  #   terraform init -migrate-state
-  #
-  # backend "s3" {
-  #   bucket       = "popo-tfstate-ACCOUNT_ID"
-  #   key          = "prod/terraform.tfstate"
-  #   region       = "eu-west-1"
-  #   encrypt      = true
-  #   use_lockfile = true
-  # }
+  # Partial S3 backend — filled at init via -backend-config=../../backends/prod.hcl
+  backend "s3" {}
 
   required_providers {
     aws = {

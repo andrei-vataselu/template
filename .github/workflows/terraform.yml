@@ -1,0 +1,97 @@
+name: Terraform
+
+# Manual only — Actions → Terraform → Run workflow
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Which environment to plan/apply"
+        required: true
+        type: choice
+        options:
+          - dev
+          - prod
+      action:
+        description: "plan (dry-run) or apply (create/update infra)"
+        required: true
+        type: choice
+        default: plan
+        options:
+          - plan
+          - apply
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  AWS_REGION: eu-west-1
+
+jobs:
+  terraform:
+    name: ${{ inputs.action }} · ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.4"
+          terraform_wrapper: false
+
+      - name: Resolve paths
+        id: paths
+        run: |
+          case "${{ inputs.environment }}" in
+            dev)  echo "dir=infra/environments/dev"  >> "$GITHUB_OUTPUT" ;;
+            prod) echo "dir=infra/environments/prod" >> "$GITHUB_OUTPUT" ;;
+            *)    echo "Unknown environment" >&2; exit 1 ;;
+          esac
+          echo "key=${{ inputs.environment }}/terraform.tfstate" >> "$GITHUB_OUTPUT"
+          echo "bucket=popo-tfstate-${{ vars.AWS_ACCOUNT_ID }}" >> "$GITHUB_OUTPUT"
+
+      - name: Terraform init
+        working-directory: ${{ steps.paths.outputs.dir }}
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ steps.paths.outputs.bucket }}" \
+            -backend-config="key=${{ steps.paths.outputs.key }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      - name: Prepare tfvars
+        working-directory: ${{ steps.paths.outputs.dir }}
+        run: |
+          cp terraform.tfvars.example terraform.tfvars
+          if [ -n "${{ vars.ALERT_EMAIL }}" ]; then
+            sed -i 's/alert_email.*/alert_email = "${{ vars.ALERT_EMAIL }}"/' terraform.tfvars
+          fi
+          if [ -n "${{ vars.DOMAIN_NAME }}" ] && grep -q 'domain_name' terraform.tfvars; then
+            sed -i 's/domain_name.*/domain_name = "${{ vars.DOMAIN_NAME }}"/' terraform.tfvars
+          fi
+          if [ -n "${{ vars.APP_GIT_URL }}" ] && grep -q 'app_git_url' terraform.tfvars; then
+            sed -i "s|app_git_url.*|app_git_url = \"${{ vars.APP_GIT_URL }}\"|" terraform.tfvars
+          fi
+
+      - name: Terraform validate
+        working-directory: ${{ steps.paths.outputs.dir }}
+        run: terraform validate
+
+      - name: Terraform plan
+        if: inputs.action == 'plan'
+        working-directory: ${{ steps.paths.outputs.dir }}
+        run: terraform plan -input=false -no-color
+
+      - name: Terraform apply
+        if: inputs.action == 'apply'
+        working-directory: ${{ steps.paths.outputs.dir }}
+        run: terraform apply -input=false -auto-approve

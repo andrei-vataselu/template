@@ -1,8 +1,9 @@
 # Account-level stack — apply once, before dev/prod.
-# COST: ~$1.50-5.50/mo, mostly GuardDuty (30-day free trial).
-aws_region       = "eu-west-1"
-project_name     = "popo"
-application_name = "template"
-alert_email      = "you@example.com"
-enable_guardduty = true
-domain_name      = "your-domain.tld" # "" = no Route 53 zone
+aws_region         = "eu-west-1"
+project_name       = "popo"
+application_name   = "template"
+alert_email        = "you@example.com"
+enable_guardduty   = true
+domain_name        = "your-domain.tld"
+github_repository  = "OWNER/REPO"
+enable_github_oidc = true

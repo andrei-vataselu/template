@@ -1,6 +1,4 @@
-# Lower-cost compromise (guide §1): EC2 may be public but ingress only from CloudFront.
-# Rules are standalone resources so the app and db SGs can reference each other
-# without a Terraform dependency cycle.
+# CloudFront → ALB → EC2. App instances only accept traffic from the ALB.
 data "aws_ec2_managed_prefix_list" "cloudfront" {
   name = "com.amazonaws.global.cloudfront.origin-facing"
 }
@@ -9,9 +7,19 @@ data "aws_vpc" "this" {
   id = var.vpc_id
 }
 
+resource "aws_security_group" "alb" {
+  name        = "${var.project_name}-${var.environment}-alb"
+  description = "ALB - CloudFront prefix list only; no SSH/RDP"
+  vpc_id      = var.vpc_id
+
+  tags = merge(var.tags, {
+    Name = "${var.project_name}-${var.environment}-alb-sg"
+  })
+}
+
 resource "aws_security_group" "app" {
   name        = "${var.project_name}-${var.environment}-app"
-  description = "App origin - CloudFront prefix list only; no SSH/RDP"
+  description = "App instances - ALB only; no SSH/RDP"
   vpc_id      = var.vpc_id
 
   tags = merge(var.tags, {
@@ -29,27 +37,47 @@ resource "aws_security_group" "db" {
   })
 }
 
-# --- App ingress ---
+# --- ALB ingress (CloudFront edge only) ---
 
-resource "aws_vpc_security_group_ingress_rule" "app_http_from_cloudfront" {
-  security_group_id = aws_security_group.app.id
-  description       = "HTTP from CloudFront edge only"
+resource "aws_vpc_security_group_ingress_rule" "alb_http_from_cloudfront" {
+  security_group_id = aws_security_group.alb.id
+  description       = "HTTP from CloudFront (fallback when no ACM cert)"
   from_port         = 80
   to_port           = 80
   ip_protocol       = "tcp"
   prefix_list_id    = data.aws_ec2_managed_prefix_list.cloudfront.id
 }
 
-resource "aws_vpc_security_group_ingress_rule" "app_https_from_cloudfront" {
-  security_group_id = aws_security_group.app.id
-  description       = "HTTPS from CloudFront edge only (https-only origin)"
+resource "aws_vpc_security_group_ingress_rule" "alb_https_from_cloudfront" {
+  security_group_id = aws_security_group.alb.id
+  description       = "HTTPS from CloudFront edge only"
   from_port         = 443
   to_port           = 443
   ip_protocol       = "tcp"
   prefix_list_id    = data.aws_ec2_managed_prefix_list.cloudfront.id
 }
 
-# --- App egress (least privilege: SSM/updates/git + DB) ---
+resource "aws_vpc_security_group_egress_rule" "alb_to_app" {
+  security_group_id            = aws_security_group.alb.id
+  description                  = "Forward to app instances"
+  from_port                    = 80
+  to_port                      = 80
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.app.id
+}
+
+# --- App ingress (ALB only) ---
+
+resource "aws_vpc_security_group_ingress_rule" "app_http_from_alb" {
+  security_group_id            = aws_security_group.app.id
+  description                  = "HTTP from ALB only"
+  from_port                    = 80
+  to_port                      = 80
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.alb.id
+}
+
+# --- App egress (least privilege: updates/git + DB) ---
 
 resource "aws_vpc_security_group_egress_rule" "app_https_out" {
   security_group_id = aws_security_group.app.id
@@ -60,8 +88,6 @@ resource "aws_vpc_security_group_egress_rule" "app_https_out" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
-# VPC-internal only: the Route 53 Resolver (VPC+2) bypasses SG filtering anyway,
-# so this rule exists purely to stop DNS exfiltration to external resolvers
 resource "aws_vpc_security_group_egress_rule" "app_dns_out" {
   security_group_id = aws_security_group.app.id
   description       = "DNS to VPC resolver only (blocks DNS exfiltration)"
@@ -80,7 +106,7 @@ resource "aws_vpc_security_group_egress_rule" "app_postgres_to_db" {
   referenced_security_group_id = aws_security_group.db.id
 }
 
-# --- DB ingress (no egress rules at all: stateful responses still flow) ---
+# --- DB ingress (no egress rules: stateful responses still flow) ---
 
 resource "aws_vpc_security_group_ingress_rule" "db_postgres_from_app" {
   security_group_id            = aws_security_group.db.id

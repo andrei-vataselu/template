@@ -89,8 +89,8 @@ resource "aws_cloudwatch_log_group" "app" {
   tags              = var.tags
 }
 
-resource "aws_cloudwatch_metric_alarm" "ec2_cpu" {
-  alarm_name          = "${var.project_name}-${var.environment}-ec2-cpu"
+resource "aws_cloudwatch_metric_alarm" "asg_cpu" {
+  alarm_name          = "${var.project_name}-${var.environment}-asg-cpu"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 3
   metric_name         = "CPUUtilization"
@@ -98,12 +98,33 @@ resource "aws_cloudwatch_metric_alarm" "ec2_cpu" {
   period              = 300
   statistic           = "Average"
   threshold           = 85
-  alarm_description   = "EC2 CPU high — fixed capacity may throttle (expected under guide)"
+  alarm_description   = "ASG average CPU high — raise asg_desired_capacity manually if sustained (no auto-scale)"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
 
   dimensions = {
-    InstanceId = var.ec2_instance_id
+    AutoScalingGroupName = var.asg_name
+  }
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "unhealthy_hosts" {
+  alarm_name          = "${var.project_name}-${var.environment}-unhealthy-hosts"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 2
+  metric_name         = "UnHealthyHostCount"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 1
+  alarm_description   = "ALB has unhealthy targets — deploy or instance may be failing health checks"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    LoadBalancer = var.alb_arn_suffix
+    TargetGroup  = var.target_group_arn_suffix
   }
 
   tags = var.tags

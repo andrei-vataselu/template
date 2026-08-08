@@ -23,17 +23,28 @@ server {
     return 405;
   }
 
-  set $origin_ok 0;
+  # Origin secret required for everything except ALB health checks
+  set $block_origin 1;
   set $skip_check "${SKIP_ORIGIN_CHECK}";
-
   if ($skip_check = "1") {
-    set $origin_ok 1;
+    set $block_origin 0;
   }
   if ($http_x_origin_verify = "${ORIGIN_HEADER_VALUE}") {
-    set $origin_ok 1;
+    set $block_origin 0;
   }
-  if ($origin_ok = 0) {
+  if ($request_uri = "/api/health") {
+    set $block_origin 0;
+  }
+  if ($block_origin = 1) {
     return 403;
+  }
+
+  location = /api/health {
+    proxy_pass http://api:3000/api/health;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_connect_timeout 3s;
+    proxy_read_timeout 5s;
   }
 
   location /api/ {

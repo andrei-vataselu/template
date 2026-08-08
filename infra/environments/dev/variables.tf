@@ -98,3 +98,20 @@ variable "allowed_ip_cidrs" {
   type        = list(string)
   default     = []
 }
+
+variable "asg_min_size" {
+  type    = number
+  default = 1
+}
+
+variable "asg_desired_capacity" {
+  description = "Steady-state instances. Raise to scale; no CPU autoscaling (predictable cost)."
+  type        = number
+  default     = 1
+}
+
+variable "asg_max_size" {
+  description = "Hard cap. Keep >= desired+1 so rolling deploys can launch a replacement first."
+  type        = number
+  default     = 2
+}

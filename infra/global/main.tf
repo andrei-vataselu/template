@@ -305,3 +305,59 @@ resource "aws_accessanalyzer_analyzer" "external" {
   analyzer_name = "${var.project_name}-external-access"
   type          = "ACCOUNT"
 }
+
+# ---------------------------------------------------------------------------
+# GitHub Actions OIDC — pipeline can plan/apply without long-lived AWS keys
+# ---------------------------------------------------------------------------
+
+data "tls_certificate" "github" {
+  count = var.enable_github_oidc ? 1 : 0
+  url   = "https://token.actions.githubusercontent.com"
+}
+
+resource "aws_iam_openid_connect_provider" "github" {
+  count = var.enable_github_oidc ? 1 : 0
+
+  url             = "https://token.actions.githubusercontent.com"
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.github[0].certificates[0].sha1_fingerprint]
+}
+
+resource "aws_iam_role" "github_terraform" {
+  count = var.enable_github_oidc ? 1 : 0
+
+  name = "${var.project_name}-github-terraform"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = aws_iam_openid_connect_provider.github[0].arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        }
+        StringLike = {
+          # PRs + pushes on this repo only (tighten to ref:refs/heads/main later if you want)
+          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:*"
+        }
+      }
+    }]
+  })
+
+  tags = {
+    Application = var.application_name
+    Environment = "global"
+  }
+}
+
+# Bootstrap convenience: full admin for Terraform CI. Tighten with SCPs / least-privilege later.
+resource "aws_iam_role_policy_attachment" "github_terraform_admin" {
+  count = var.enable_github_oidc ? 1 : 0
+
+  role       = aws_iam_role.github_terraform[0].name
+  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+}

@@ -5,17 +5,16 @@
   Same in every env:
   - VPC: 2 public app AZs + 2 private DB AZs, IGW on public only, no NAT
   - S3 gateway endpoint only (no interface endpoints)
-  - App SG: CloudFront prefix list only, no SSH/RDP
-  - DB SG: app SG only, private, SSL forced, encrypted
+  - ALB SG: CloudFront prefix list only; App SG: ALB only; no SSH/RDP
+  - ASG (desired=1, max capped) + ALB for zero-downtime rolling deploys
   - CloudFront + WAF + origin secret header + Docker on EC2
   - Cognito (no SMS, no public signup), budgets/SNS, resource groups
 
   Differs by env vars only:
-  - instance sizes, CloudFront plan (manual), multi_az, deletion_protection, backups
+  - instance sizes, CloudFront plan (manual), multi_az, deletion_protection, backups, ASG max
 
   COST GATE (eu-west-1, no free-tier): see ../../COST_GATE.txt
-  DEV expected ~$28–30/mo (public IPv4 included). $25 alert will trip.
-  Guide Business/private-origin PROD ~$245+/mo.
+  DEV expected ~$52–55/mo with ALB (was ~$28–30 without). Scale by raising asg_desired.
 */
 
 data "aws_availability_zones" "available" {
@@ -27,8 +26,6 @@ resource "random_password" "origin_header" {
   special = false
 }
 
-# Origin secret lives in Secrets Manager; EC2 fetches it at boot via its role
-# instead of having it baked into user-data (readable through the EC2 API).
 resource "aws_secretsmanager_secret" "origin_header" {
   name_prefix             = "${var.project_name}-${var.environment}-origin-header-"
   description             = "CloudFront origin verification header value"
@@ -45,7 +42,6 @@ locals {
   azs                = slice(data.aws_availability_zones.available.names, 0, 2)
   origin_header_name = "X-Origin-Verify"
 
-  # dev.<domain> for users, origin-dev.<domain> for CloudFront -> EC2 TLS
   site_fqdn   = var.domain_name != "" ? "dev.${var.domain_name}" : ""
   origin_fqdn = var.domain_name != "" ? "origin-dev.${var.domain_name}" : ""
 
@@ -55,8 +51,6 @@ locals {
   }
 }
 
-# Zone is created by infra/global — apply that stack (and switch the
-# registrar's nameservers to Route 53) before enabling domain_name here
 data "aws_route53_zone" "main" {
   count = var.domain_name != "" ? 1 : 0
   name  = var.domain_name
@@ -84,31 +78,23 @@ module "security_groups" {
 module "compute" {
   source = "../../modules/compute"
 
-  project_name      = var.project_name
-  environment       = var.environment
-  subnet_id         = module.networking.public_subnet_ids[0]
-  security_group_id = module.security_groups.app_security_group_id
-  instance_type     = var.instance_type
-  root_volume_gb    = var.root_volume_gb
-  origin_secret_arn = aws_secretsmanager_secret.origin_header.arn
-  app_git_url       = var.app_git_url
-  origin_fqdn       = local.origin_fqdn
-  zone_id           = var.domain_name != "" ? data.aws_route53_zone.main[0].zone_id : ""
-  certbot_email     = var.alert_email
-  tags              = local.common_tags
+  project_name          = var.project_name
+  environment           = var.environment
+  subnet_ids            = module.networking.public_subnet_ids
+  alb_security_group_id = module.security_groups.alb_security_group_id
+  app_security_group_id = module.security_groups.app_security_group_id
+  instance_type         = var.instance_type
+  root_volume_gb        = var.root_volume_gb
+  origin_secret_arn     = aws_secretsmanager_secret.origin_header.arn
+  app_git_url           = var.app_git_url
+  origin_fqdn           = local.origin_fqdn
+  zone_id               = var.domain_name != "" ? data.aws_route53_zone.main[0].zone_id : ""
+  asg_min_size          = var.asg_min_size
+  asg_desired_capacity  = var.asg_desired_capacity
+  asg_max_size          = var.asg_max_size
+  tags                  = local.common_tags
 
   depends_on = [aws_secretsmanager_secret_version.origin_header]
-}
-
-# CloudFront resolves the origin hostname publicly, so it must point at the EIP
-resource "aws_route53_record" "origin" {
-  count = var.domain_name != "" ? 1 : 0
-
-  zone_id = data.aws_route53_zone.main[0].zone_id
-  name    = local.origin_fqdn
-  type    = "A"
-  ttl     = 300
-  records = [module.compute.public_ip]
 }
 
 module "database" {
@@ -136,8 +122,8 @@ module "edge" {
 
   project_name        = var.project_name
   environment         = var.environment
-  origin_domain_name  = var.domain_name != "" ? local.origin_fqdn : module.compute.public_dns
-  origin_https        = var.domain_name != ""
+  origin_domain_name  = module.compute.origin_domain_name
+  origin_https        = module.compute.origin_https
   aliases             = var.domain_name != "" ? [local.site_fqdn] : []
   zone_id             = var.domain_name != "" ? data.aws_route53_zone.main[0].zone_id : ""
   origin_header_name  = local.origin_header_name
@@ -173,13 +159,15 @@ module "cognito" {
 module "observability" {
   source = "../../modules/observability"
 
-  project_name       = var.project_name
-  environment        = var.environment
-  monthly_budget_usd = var.monthly_budget_usd
-  alert_email        = var.alert_email
-  ec2_instance_id    = module.compute.instance_id
-  db_instance_id     = module.database.db_instance_id
-  tags               = local.common_tags
+  project_name            = var.project_name
+  environment             = var.environment
+  monthly_budget_usd      = var.monthly_budget_usd
+  alert_email             = var.alert_email
+  asg_name                = module.compute.asg_name
+  alb_arn_suffix          = module.compute.alb_arn_suffix
+  target_group_arn_suffix = module.compute.target_group_arn_suffix
+  db_instance_id          = module.database.db_instance_id
+  tags                    = local.common_tags
 }
 
 module "resource_group_env" {

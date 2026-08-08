@@ -226,7 +226,7 @@ resource "aws_cloudfront_cache_policy" "api" {
   }
 }
 
-resource "aws_cloudfront_origin_request_policy" "all_viewer" {
+resource "aws_cloudfront_origin_request_policy" "all_viewer_except_host" {
   provider = aws.us_east_1
 
   name = "${var.project_name}-${var.environment}-origin-req"
@@ -234,8 +234,12 @@ resource "aws_cloudfront_origin_request_policy" "all_viewer" {
   cookies_config {
     cookie_behavior = "all"
   }
+  # Forward all viewer headers except Host — ALB/ACM need Host = origin hostname
   headers_config {
-    header_behavior = "allViewer"
+    header_behavior = "allExcept"
+    headers {
+      items = ["Host"]
+    }
   }
   query_strings_config {
     query_string_behavior = "all"
@@ -319,7 +323,7 @@ resource "aws_cloudfront_distribution" "this" {
     compress               = true
 
     cache_policy_id            = aws_cloudfront_cache_policy.api.id
-    origin_request_policy_id   = aws_cloudfront_origin_request_policy.all_viewer.id
+    origin_request_policy_id   = aws_cloudfront_origin_request_policy.all_viewer_except_host.id
     response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
   }
 

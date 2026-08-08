@@ -1,11 +1,11 @@
-# COST: expected ~$28–30/mo (see infra/COST_GATE.txt). Alert at 25 will fire.
+# COST: expected ~$52–55/mo with ALB+ASG (see infra/COST_GATE.txt).
 aws_region               = "eu-west-1"
 project_name             = "popo"
 application_name         = "template"
 environment              = "dev"
 cost_center              = "cc-dev-sandbox"
-alert_email              = "REPLACE_ME@example.com"
-monthly_budget_usd       = 25
+alert_email              = "YOU@example.com"
+monthly_budget_usd       = 55
 instance_type            = "t4g.micro"
 db_instance_class        = "db.t4g.micro"
 root_volume_gb           = 30
@@ -15,7 +15,10 @@ db_multi_az              = false
 db_deletion_protection   = false
 db_skip_final_snapshot   = true
 vpc_cidr                 = "10.20.0.0/16"
-app_git_url              = ""
+app_git_url              = "https://github.com/OWNER/REPO.git"
+domain_name              = "your-domain.tld"
 # Lock dev to your IP(s). Get yours: curl https://checkip.amazonaws.com
-# [] = open to everyone.
 allowed_ip_cidrs         = ["YOUR_IP/32"]
+asg_min_size             = 1
+asg_desired_capacity     = 1
+asg_max_size             = 2

@@ -2,17 +2,15 @@ output "tfstate_bucket" {
   value = aws_s3_bucket.tfstate.id
 }
 
-output "backend_block_to_paste" {
-  description = "Uncomment the backend block in each env's versions.tf and use this bucket"
+output "backend_init_hint" {
+  description = "How to point stacks at this bucket"
   value       = <<-EOT
-    backend "s3" {
-      bucket       = "${aws_s3_bucket.tfstate.id}"
-      key          = "<env>/terraform.tfstate"   # dev/terraform.tfstate or prod/terraform.tfstate
-      region       = "${var.aws_region}"
-      encrypt      = true
-      use_lockfile = true
-    }
-    Then run: terraform init -migrate-state
+    1. Copy infra/backends/*.hcl.example → *.hcl and set bucket = "${aws_s3_bucket.tfstate.id}"
+    2. Global (after first local apply):
+         cd infra/global && terraform init -backend-config=../backends/global.hcl -migrate-state
+    3. Dev / prod:
+         cd infra/environments/<env> && terraform init -backend-config=../../backends/<env>.hcl -migrate-state
+    4. Pipeline uses the same bucket via -backend-config generated from AWS_ACCOUNT_ID
   EOT
 }
 
@@ -31,4 +29,9 @@ output "name_servers" {
 
 output "guardduty_enabled" {
   value = var.enable_guardduty
+}
+
+output "github_actions_role_arn" {
+  description = "GitHub Actions variable AWS_ROLE_ARN"
+  value       = var.enable_github_oidc ? aws_iam_role.github_terraform[0].arn : null
 }

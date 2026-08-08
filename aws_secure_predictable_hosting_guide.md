@@ -4,6 +4,14 @@
 **Target region:** `eu-west-1` for the application, with `us-east-1` where CloudFront requires global resources  
 **Objective:** Build a production website whose traffic-related AWS costs cannot grow unexpectedly, while maintaining a strong security posture.
 
+> **This repo’s live implementation** follows the guide’s **lower-cost compromise** (CloudFront Free/Pro → ALB → ASG), not the Business private-VPC-origin path (~$200/mo).
+>
+> For **current status, costs, security grades, and go-live steps**, use:
+> - [`README.md`](README.md) — architecture, capacity, layout  
+> - [`CHECKLIST.md`](CHECKLIST.md) — what you must do (cost tags ✅, email ✅, …)  
+> - [`SECURITY_CHECK.md`](SECURITY_CHECK.md) — controls + gaps  
+> - [`COST_PREDICTABILITY.md`](COST_PREDICTABILITY.md) — ~$52–55/mo dev, ~$110+/mo prod  
+
 > [!IMPORTANT]
 > No internet-facing system can be guaranteed to be **100% secure**, **100% available**, or billed to exactly the same amount every month.
 >

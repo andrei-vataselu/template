@@ -17,12 +17,12 @@ variable "application_name" {
 
 variable "environment" {
   type    = string
-  default = "dev"
+  default = "prod"
 }
 
 variable "cost_center" {
   type    = string
-  default = "cc-dev-sandbox"
+  default = "cc-prod-core"
 }
 
 variable "alert_email" {
@@ -33,22 +33,22 @@ variable "alert_email" {
 variable "monthly_budget_usd" {
   description = "Hard internal monthly budget (alerts only — not a real-time cut-off)"
   type        = number
-  default     = 25
+  default     = 100
 }
 
 variable "instance_type" {
   type    = string
-  default = "t4g.micro"
+  default = "t4g.small"
 }
 
 variable "db_instance_class" {
   type    = string
-  default = "db.t4g.micro"
+  default = "db.t4g.small"
 }
 
 variable "root_volume_gb" {
   type    = number
-  default = 30
+  default = 40
 }
 
 variable "app_git_url" {
@@ -97,4 +97,21 @@ variable "allowed_ip_cidrs" {
   description = "IPv4 CIDRs allowed through CloudFront (WAF). Empty = public (normal for prod)."
   type        = list(string)
   default     = []
+}
+
+variable "asg_min_size" {
+  type    = number
+  default = 1
+}
+
+variable "asg_desired_capacity" {
+  description = "Steady-state instances. Raise to scale; no CPU autoscaling (predictable cost)."
+  type        = number
+  default     = 1
+}
+
+variable "asg_max_size" {
+  description = "Hard cap. Keep >= desired+1 so rolling deploys can launch a replacement first."
+  type        = number
+  default     = 3
 }

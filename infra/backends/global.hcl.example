@@ -1,0 +1,7 @@
+# Copy to global.hcl and replace ACCOUNT_ID (from: aws sts get-caller-identity)
+# Then: cd infra/global && terraform init -backend-config=../backends/global.hcl -migrate-state
+bucket       = "popo-tfstate-ACCOUNT_ID"
+key          = "global/terraform.tfstate"
+region       = "eu-west-1"
+encrypt      = true
+use_lockfile = true
