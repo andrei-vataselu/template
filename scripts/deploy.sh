@@ -24,7 +24,7 @@ echo "  Strategy: Rolling, MinHealthyPercentage=100 (zero downtime while max_siz
 aws autoscaling start-instance-refresh \
   --auto-scaling-group-name "$ASG_NAME" \
   --region "$REGION" \
-  --preferences MinHealthyPercentage=100,InstanceWarmup=300,SkipMatching=false \
+  --preferences MinHealthyPercentage=100,InstanceWarmup=600,SkipMatching=false \
   --query 'InstanceRefreshId' \
   --output text
 

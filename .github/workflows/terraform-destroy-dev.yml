@@ -1,0 +1,90 @@
+name: Terraform destroy (dev only)
+
+# Manual tear-down of the DEV stack. Does not touch prod or global.
+# Actions → Terraform destroy (dev only) → type confirm = destroy-dev
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type exactly destroy-dev to proceed"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  AWS_REGION: eu-west-1
+
+jobs:
+  destroy-dev:
+    name: destroy · dev
+    if: inputs.confirm == 'destroy-dev'
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.4"
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: infra/environments/dev
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=popo-tfstate-${{ vars.AWS_ACCOUNT_ID }}" \
+            -backend-config="key=dev/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      - name: Prepare tfvars
+        working-directory: infra/environments/dev
+        run: |
+          cp terraform.tfvars.example terraform.tfvars
+          if [ -n "${{ vars.ALERT_EMAIL }}" ]; then
+            sed -i 's/^alert_email.*/alert_email = "${{ vars.ALERT_EMAIL }}"/' terraform.tfvars
+          fi
+          if [ -n "${{ vars.DOMAIN_NAME }}" ]; then
+            sed -i 's/^domain_name.*/domain_name = "${{ vars.DOMAIN_NAME }}"/' terraform.tfvars
+          fi
+          if [ -n "${{ vars.APP_GIT_URL }}" ]; then
+            sed -i "s|^app_git_url.*|app_git_url = \"${{ vars.APP_GIT_URL }}\"|" terraform.tfvars
+          fi
+          if [ -n "${{ vars.ALLOWED_IP_CIDRS }}" ]; then
+            IPS='${{ vars.ALLOWED_IP_CIDRS }}'
+            TF_LIST=$(echo "$IPS" | awk -F',' '{
+              printf "["
+              for (i=1; i<=NF; i++) {
+                gsub(/^ +| +$/, "", $i)
+                printf "\"%s\"", $i
+                if (i<NF) printf ", "
+              }
+              printf "]"
+            }')
+            sed -i "s|^allowed_ip_cidrs.*|allowed_ip_cidrs = ${TF_LIST}|" terraform.tfvars
+          fi
+
+      - name: Terraform destroy
+        working-directory: infra/environments/dev
+        run: terraform destroy -input=false -auto-approve
+
+  reject:
+    name: rejected (bad confirm)
+    if: inputs.confirm != 'destroy-dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail
+        run: |
+          echo "Refusing destroy. You typed '${{ inputs.confirm }}' — must be exactly: destroy-dev"
+          exit 1

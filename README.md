@@ -30,8 +30,9 @@ Secure, cost-predictable AWS hosting for a **React + Vite + Tailwind** frontend 
 | ✅ | GitHub Variables + Environments `dev`/`prod` (prod requires reviewer) |
 | ✅ | IAM: `andrei-cli` + `popo-admins` + RequireMFA; root MFA already on |
 | ✅ | Commit + push — Terraform workflow active on GitHub |
+| ✅ | Apply **dev** via Actions (run [31280171042](https://github.com/andrei-vataselu/template/actions/runs/31280171042)) |
+| ⬜ | Attach CloudFront **Free** plan + verify site/health |
 | ⬜ | Switch to `andrei-cli` MFA *(deferred — optional)* |
-| ⬜ | Apply **dev** (~$52–55/mo) + CloudFront Free plan |
 
 ---
 
@@ -54,10 +55,12 @@ User
 | Auth | Cognito (admin-only signup, MFA required, PKCE) |
 | Account | `infra/global`: state bucket, CloudTrail, GuardDuty, Route 53, GitHub OIDC |
 | State | S3 backend (versioned, SSE-KMS, lockfile) after bootstrap |
-| CI | GitHub Actions — manual only (dev/prod × plan/apply) |
+| CI | Manual Actions: Terraform plan/apply · Deploy FE/BE · destroy-dev |
 
 **Zero-downtime app deploy:** `./scripts/deploy.sh dev`  
-**Infra deploy:** GitHub → Actions → Terraform → Run workflow (dev or prod), or local `terraform apply`  
+**Infra:** Actions → Terraform (dev/prod × plan/apply)  
+**App:** Actions → Deploy frontend / Deploy backend (ASG rolling refresh)  
+**Tear down dev:** Actions → Terraform destroy (dev only) → type `destroy-dev`
 **Scale:** set `asg_desired_capacity` (capped by `asg_max_size`; no CPU autoscaling)
 
 ---

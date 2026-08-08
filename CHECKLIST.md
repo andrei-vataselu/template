@@ -43,21 +43,11 @@ terraform output tfstate_bucket
 
 ## C. Dev environment
 
-**Prep done:** `infra/backends/dev.hcl` + local `terraform.tfvars` ready. **Not applied yet** (~$52–55/mo).
-
-```powershell
-# aws login --profile andrei-login + export creds (BOOTSTRAP §4.1)
-cd infra/environments/dev
-terraform init "-backend-config=../../backends/dev.hcl" -input=false
-terraform plan
-terraform apply   # only when you intentionally start paying ~$52–55/mo
-```
-
-Or: Actions → Terraform → `dev` + `plan`/`apply` (after commit+push).
+**Prep done:** applied via Actions. Confirm post-apply items below.
 
 - [ ] Confirm SNS email for **budget / alarms** (after apply)
-- [ ] CloudFront console → attach **Free** flat-rate plan (see BOOTSTRAP §10)
-- [ ] `https://dev.andrei-vataselu.online` loads; `/api/health` → `{"ok":true}`
+- [ ] CloudFront console → attach **Free** flat-rate plan to `E1MGMAFLXSGBRB` / `dev.andrei-vataselu.online` (see BOOTSTRAP §10)
+- [ ] From allowlisted IP: `https://dev.andrei-vataselu.online` loads; `/api/health` → ok
 
 ---
 
@@ -66,12 +56,12 @@ Or: Actions → Terraform → `dev` + `plan`/`apply` (after commit+push).
 | Task | How |
 |---|---|
 | Local run | `cd deploy && cp .env.example .env && docker compose up --build` |
-| Zero-downtime **app** deploy | Push to git → `./scripts/deploy.sh dev` |
-| **Infra** via pipeline | GitHub → Actions → **Terraform** → Run workflow → pick **dev** or **prod** + plan/apply |
+| Zero-downtime **app** deploy | Actions → **Deploy frontend** / **Deploy backend**, or `./scripts/deploy.sh dev` |
+| **Infra** via pipeline | Actions → **Terraform** → `dev`/`prod` × plan/apply |
 | Scale (predictable) | Edit `asg_desired_capacity` (≤ `asg_max_size`) → apply |
 | Shell | SSM Session Manager (no SSH) |
-| Rotate origin secret | `terraform apply -replace=random_password.origin_header` then `./scripts/deploy.sh` |
-| Tear down dev | `terraform destroy` in `infra/environments/dev` |
+| Rotate origin secret | `terraform apply -replace=random_password.origin_header` then deploy |
+| Tear down **dev** | Actions → **Terraform destroy (dev only)** → type `destroy-dev` |
 
 ---
 
@@ -110,16 +100,13 @@ Repo → **Settings → Secrets and variables → Actions → Variables**:
 
 Environments: `dev` + `prod` (prod has **required reviewer** `andrei-vataselu`).
 
-Workflow is on `main` and **active** (Actions → Terraform).
+Workflow is on `main` and **active**.
 
-
-Workflow: [`.github/workflows/terraform.yml`](.github/workflows/terraform.yml) — **manual only**.
-
-| Input | Options |
+| Workflow | How |
 |---|---|
-| `environment` | `dev` · `prod` |
-| `action` | `plan` (dry-run) · `apply` (create/update) |
+| [Terraform](.github/workflows/terraform.yml) | Run → `dev`/`prod` × `plan`/`apply` |
+| [Deploy frontend](.github/workflows/deploy-frontend.yml) | Run → build FE image → ASG refresh |
+| [Deploy backend](.github/workflows/deploy-backend.yml) | Run → build BE image → ASG refresh |
+| [Terraform destroy (dev only)](.github/workflows/terraform-destroy-dev.yml) | Run → type `destroy-dev` |
 
-How: Actions → **Terraform** → **Run workflow** → choose env + action.
-
-State: `s3://popo-tfstate-<ACCOUNT_ID>/{dev,prod}/terraform.tfstate` (global is local/account bootstrap, not this workflow).
+State: `s3://popo-tfstate-<ACCOUNT_ID>/{dev,prod}/terraform.tfstate` (global is account bootstrap, not these workflows).
