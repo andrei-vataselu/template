@@ -59,34 +59,30 @@ jobs:
           ASG="${{ env.PROJECT_NAME }}-${{ steps.env.outputs.name }}-app"
           echo "Target ASG=$ASG"
 
-          # Latest commit wins — cancel any in-progress refresh (FE+BE can race on main)
-          CUR=$(aws autoscaling describe-instance-refreshes \
-            --auto-scaling-group-name "$ASG" \
-            --region "${{ env.AWS_REGION }}" \
-            --max-records 1 \
-            --query 'InstanceRefreshes[0].Status' --output text 2>/dev/null || echo "None")
-          if [ "$CUR" = "InProgress" ] || [ "$CUR" = "Pending" ] || [ "$CUR" = "Cancelling" ]; then
-            echo "Cancelling existing refresh (status=$CUR)..."
-            aws autoscaling cancel-instance-refresh \
+          # NEVER cancel an in-progress refresh — that terminates the old healthy
+          # instance before the new one is ready and causes 502 downtime.
+          # Wait for any active refresh, then start ours (latest code wins next).
+          for i in $(seq 1 90); do
+            CUR=$(aws autoscaling describe-instance-refreshes \
               --auto-scaling-group-name "$ASG" \
-              --region "${{ env.AWS_REGION }}" || true
-            for i in $(seq 1 36); do
-              S=$(aws autoscaling describe-instance-refreshes \
-                --auto-scaling-group-name "$ASG" \
-                --region "${{ env.AWS_REGION }}" \
-                --max-records 1 \
-                --query 'InstanceRefreshes[0].Status' --output text)
-              echo "  wait $i: $S"
-              case "$S" in
-                Cancelled|Failed|Successful|None) break ;;
-              esac
-              sleep 10
-            done
-          fi
+              --region "${{ env.AWS_REGION }}" \
+              --max-records 1 \
+              --query 'InstanceRefreshes[0].Status' --output text 2>/dev/null || echo "None")
+            case "$CUR" in
+              InProgress|Pending|Cancelling)
+                echo "  wait $i: refresh still $CUR (preserving zero-downtime)"
+                sleep 20
+                ;;
+              *)
+                echo "  clear to start (last status=$CUR)"
+                break
+                ;;
+            esac
+          done
 
           REFRESH_ID=$(aws autoscaling start-instance-refresh \
             --auto-scaling-group-name "$ASG" \
             --region "${{ env.AWS_REGION }}" \
-            --preferences MinHealthyPercentage=100,InstanceWarmup=600,SkipMatching=false \
+            --preferences MinHealthyPercentage=100,InstanceWarmup=900,SkipMatching=false \
             --query InstanceRefreshId --output text)
           echo "InstanceRefreshId=$REFRESH_ID"
