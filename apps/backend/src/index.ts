@@ -39,7 +39,7 @@ app.get("/api/info", (_req, res) => {
   res.json({
     app: appName,
     environment,
-    message: "Secure cost-predictable hosting stack is running on Docker.",
+    message: "Secure cost-predictable hosting stack is running on Docker. (BE deploy probe)",
     stack: {
       backend: "Node.js + TypeScript + Express",
       frontend: "React + Vite + TypeScript + Tailwind",
