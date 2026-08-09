@@ -1,13 +1,3 @@
-terraform {
-  required_providers {
-    aws = {
-      source                = "hashicorp/aws"
-      version               = ">= 5.0"
-      configuration_aliases = [aws.us_east_1]
-    }
-  }
-}
-
 # Guide §7: Cognito — email via SES, optional self-signup, PKCE SPA client
 
 resource "aws_cognito_user_pool" "this" {
