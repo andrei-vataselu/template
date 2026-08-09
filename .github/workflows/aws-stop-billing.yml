@@ -1,0 +1,162 @@
+name: AWS stop billing leftovers
+
+# Tears down remaining account-level billable resources after env destroy.
+# Keeps tfstate bucket + GitHub OIDC roles (essentially free) so CI can redeploy later.
+# Actions → AWS stop billing leftovers → confirm = stop-billing
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type exactly stop-billing to proceed"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-west-1
+
+jobs:
+  reject:
+    name: rejected (bad confirm)
+    if: inputs.confirm != 'stop-billing'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "Refusing. Typed '${{ inputs.confirm }}' — must be exactly: stop-billing"
+          exit 1
+
+  stop-billing:
+    name: stop billing leftovers
+    if: inputs.confirm == 'stop-billing'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Disable GuardDuty
+        run: |
+          set -euo pipefail
+          for region in eu-west-1 us-east-1; do
+            ids=$(aws guardduty list-detectors --region "$region" --query 'DetectorIds[]' --output text || true)
+            for id in $ids; do
+              [[ -z "$id" || "$id" == "None" ]] && continue
+              echo "Deleting GuardDuty detector $id in $region"
+              aws guardduty delete-detector --region "$region" --detector-id "$id"
+            done
+          done
+
+      - name: Delete CloudTrail + trail bucket
+        run: |
+          set -euo pipefail
+          ACCOUNT="${{ vars.AWS_ACCOUNT_ID }}"
+          TRAIL_BUCKET="popo-cloudtrail-${ACCOUNT}"
+          if aws cloudtrail get-trail --name popo-management >/dev/null 2>&1; then
+            echo "Stopping/deleting trail popo-management"
+            aws cloudtrail stop-logging --name popo-management || true
+            aws cloudtrail delete-trail --name popo-management
+          fi
+          if aws s3api head-bucket --bucket "$TRAIL_BUCKET" 2>/dev/null; then
+            echo "Emptying and deleting $TRAIL_BUCKET"
+            aws s3 rm "s3://${TRAIL_BUCKET}" --recursive || true
+            # versioned objects
+            aws s3api list-object-versions --bucket "$TRAIL_BUCKET" --output json \
+              | python3 -c '
+import json,sys,subprocess
+d=json.load(sys.stdin)
+objs=[{"Key":o["Key"],"VersionId":o["VersionId"]} for o in d.get("Versions",[])+d.get("DeleteMarkers",[])]
+for i in range(0,len(objs),1000):
+  chunk=objs[i:i+1000]
+  if not chunk: continue
+  body=json.dumps({"Objects":chunk,"Quiet":True})
+  subprocess.check_call(["aws","s3api","delete-objects","--bucket","'"$TRAIL_BUCKET"'","--delete",body])
+'
+            aws s3api delete-bucket --bucket "$TRAIL_BUCKET"
+          fi
+
+      - name: Delete Route53 hosted zone (main cost ~$0.50/mo)
+        run: |
+          set -euo pipefail
+          ZONES=$(aws route53 list-hosted-zones --query 'HostedZones[?Name==`andrei-vataselu.online.`].Id' --output text || true)
+          for zraw in $ZONES; do
+            [[ -z "$zraw" || "$zraw" == "None" ]] && continue
+            zid="${zraw##*/}"
+            echo "Clearing non-default records in zone $zid"
+            aws route53 list-resource-record-sets --hosted-zone-id "$zid" --output json > /tmp/rrs.json
+            python3 <<PY
+          import json, subprocess
+          zid = "${zid}"
+          rrs = json.load(open("/tmp/rrs.json"))["ResourceRecordSets"]
+          changes = [{"Action": "DELETE", "ResourceRecordSet": r} for r in rrs if r["Type"] not in ("NS", "SOA")]
+          if changes:
+              body = json.dumps({"Changes": changes})
+              subprocess.check_call([
+                  "aws", "route53", "change-resource-record-sets",
+                  "--hosted-zone-id", zid, "--change-batch", body,
+              ])
+          print("deleting zone", zid)
+          PY
+            aws route53 delete-hosted-zone --id "$zid"
+          done
+
+      - name: Sync global Terraform state (drop destroyed addrs)
+        run: |
+          set -euo pipefail
+          ACCOUNT="${{ vars.AWS_ACCOUNT_ID }}"
+          STATE_BUCKET="popo-tfstate-${ACCOUNT}"
+          KEY="global/terraform.tfstate"
+          aws s3 cp "s3://${STATE_BUCKET}/${KEY}" /tmp/global.tfstate
+          python3 <<'PY'
+          import json
+          path="/tmp/global.tfstate"
+          with open(path) as f:
+            state=json.load(f)
+          drop_types={
+            "aws_route53_zone",
+            "aws_cloudtrail",
+            "aws_s3_bucket",
+            "aws_s3_bucket_public_access_block",
+            "aws_s3_bucket_server_side_encryption_configuration",
+            "aws_s3_bucket_lifecycle_configuration",
+            "aws_s3_bucket_policy",
+            "aws_guardduty_detector",
+          }
+          # Only drop cloudtrail bucket resources + route53 + guardduty — keep tfstate bucket/OIDC.
+          keep=[]
+          for r in state.get("resources",[]):
+            name=r.get("name","")
+            typ=r.get("type","")
+            if typ=="aws_route53_zone":
+              continue
+            if typ=="aws_cloudtrail":
+              continue
+            if typ=="aws_guardduty_detector":
+              continue
+            if typ.startswith("aws_s3_") and name.startswith("cloudtrail"):
+              continue
+            keep.append(r)
+          state["resources"]=keep
+          state["serial"]=int(state.get("serial",0))+1
+          with open(path,"w") as f:
+            json.dump(state,f)
+          print("kept", len(keep), "resources")
+          PY
+          aws s3 cp /tmp/global.tfstate "s3://${STATE_BUCKET}/${KEY}"
+
+      - name: Verify leftovers
+        run: |
+          set -euo pipefail
+          echo "=== GuardDuty ==="
+          aws guardduty list-detectors --query 'DetectorIds' --output text
+          echo "=== CloudTrail ==="
+          aws cloudtrail describe-trails --query 'trailList[].Name' --output text || true
+          echo "=== Route53 ==="
+          aws route53 list-hosted-zones --query 'HostedZones[].Name' --output text || true
+          echo "=== S3 ==="
+          aws s3api list-buckets --query 'Buckets[].Name' --output text
+          echo "DONE"
