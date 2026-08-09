@@ -70,14 +70,13 @@ resource "aws_cognito_user_pool_ui_customization" "this" {
 
   css = <<-CSS
     .banner-customizable { background: linear-gradient(160deg, #f7f3ea 0%, #e7efe8 100%); }
-    .logo-customizable { max-width: 8rem; }
     .label-customizable { font-weight: 700; color: #0f3d30; }
     .inputField-customizable { border-radius: 0; border-color: rgba(18,32,28,0.18); }
     .submitButton-customizable { background-color: #0f3d30; border-color: #0f3d30; border-radius: 0; font-weight: 700; }
     .submitButton-customizable:hover { background-color: #1f6f54; border-color: #1f6f54; }
-    .redirect-customizable, .legalText-customizable { color: #0f3d30; }
     .background-customizable { background: #f3efe4; }
-    .idpDescription-customizable, .idpButton-customizable { border-radius: 0; }
+    .textDescription-customizable { color: #12201c; }
+    .errorMessage-customizable { color: #c45c26; }
   CSS
 
   depends_on = [aws_cognito_user_pool_domain.this]
