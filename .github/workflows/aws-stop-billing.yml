@@ -1,8 +1,5 @@
 name: AWS stop billing leftovers
 
-# Tears down remaining account-level billable resources after env destroy.
-# Keeps tfstate bucket + GitHub OIDC roles (essentially free) so CI can redeploy later.
-# Actions → AWS stop billing leftovers → confirm = stop-billing
 on:
   workflow_dispatch:
     inputs:
@@ -20,16 +17,12 @@ env:
 
 jobs:
   reject:
-    name: rejected (bad confirm)
     if: inputs.confirm != 'stop-billing'
     runs-on: ubuntu-latest
     steps:
-      - run: |
-          echo "Refusing. Typed '${{ inputs.confirm }}' — must be exactly: stop-billing"
-          exit 1
+      - run: echo "Must confirm with stop-billing" && exit 1
 
   stop-billing:
-    name: stop billing leftovers
     if: inputs.confirm == 'stop-billing'
     runs-on: ubuntu-latest
     steps:
@@ -43,120 +36,99 @@ jobs:
         run: |
           set -euo pipefail
           for region in eu-west-1 us-east-1; do
-            ids=$(aws guardduty list-detectors --region "$region" --query 'DetectorIds[]' --output text || true)
+            ids=$(aws guardduty list-detectors --region "$region" --query 'DetectorIds[]' --output text 2>/dev/null || true)
             for id in $ids; do
-              [[ -z "$id" || "$id" == "None" ]] && continue
-              echo "Deleting GuardDuty detector $id in $region"
-              aws guardduty delete-detector --region "$region" --detector-id "$id"
+              if [ -n "$id" ] && [ "$id" != "None" ]; then
+                echo "Deleting GuardDuty $id ($region)"
+                aws guardduty delete-detector --region "$region" --detector-id "$id"
+              fi
             done
           done
 
-      - name: Delete CloudTrail + trail bucket
+      - name: Delete CloudTrail and bucket
+        env:
+          ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          ACCOUNT="${{ vars.AWS_ACCOUNT_ID }}"
           TRAIL_BUCKET="popo-cloudtrail-${ACCOUNT}"
           if aws cloudtrail get-trail --name popo-management >/dev/null 2>&1; then
-            echo "Stopping/deleting trail popo-management"
             aws cloudtrail stop-logging --name popo-management || true
             aws cloudtrail delete-trail --name popo-management
           fi
           if aws s3api head-bucket --bucket "$TRAIL_BUCKET" 2>/dev/null; then
-            echo "Emptying and deleting $TRAIL_BUCKET"
             aws s3 rm "s3://${TRAIL_BUCKET}" --recursive || true
-            # versioned objects
-            aws s3api list-object-versions --bucket "$TRAIL_BUCKET" --output json \
-              | python3 -c '
-import json,sys,subprocess
-d=json.load(sys.stdin)
-objs=[{"Key":o["Key"],"VersionId":o["VersionId"]} for o in d.get("Versions",[])+d.get("DeleteMarkers",[])]
-for i in range(0,len(objs),1000):
-  chunk=objs[i:i+1000]
-  if not chunk: continue
-  body=json.dumps({"Objects":chunk,"Quiet":True})
-  subprocess.check_call(["aws","s3api","delete-objects","--bucket","'"$TRAIL_BUCKET"'","--delete",body])
-'
+            python3 - <<'PY'
+          import json, subprocess, os
+          bucket = f"popo-cloudtrail-{os.environ['ACCOUNT']}"
+          raw = subprocess.check_output(["aws","s3api","list-object-versions","--bucket",bucket,"--output","json"])
+          data = json.loads(raw)
+          objs = [{"Key": o["Key"], "VersionId": o["VersionId"]} for o in data.get("Versions", []) + data.get("DeleteMarkers", [])]
+          for i in range(0, len(objs), 1000):
+              chunk = objs[i:i+1000]
+              if not chunk:
+                  continue
+              body = json.dumps({"Objects": chunk, "Quiet": True})
+              subprocess.check_call(["aws","s3api","delete-objects","--bucket",bucket,"--delete",body])
+          PY
             aws s3api delete-bucket --bucket "$TRAIL_BUCKET"
           fi
 
-      - name: Delete Route53 hosted zone (main cost ~$0.50/mo)
+      - name: Delete Route53 hosted zone
         run: |
           set -euo pipefail
-          ZONES=$(aws route53 list-hosted-zones --query 'HostedZones[?Name==`andrei-vataselu.online.`].Id' --output text || true)
-          for zraw in $ZONES; do
-            [[ -z "$zraw" || "$zraw" == "None" ]] && continue
-            zid="${zraw##*/}"
-            echo "Clearing non-default records in zone $zid"
-            aws route53 list-resource-record-sets --hosted-zone-id "$zid" --output json > /tmp/rrs.json
-            python3 <<PY
+          zraw=$(aws route53 list-hosted-zones --query 'HostedZones[?Name==`andrei-vataselu.online.`].Id' --output text)
+          if [ -z "$zraw" ] || [ "$zraw" = "None" ]; then
+            echo "No hosted zone"
+            exit 0
+          fi
+          zid="${zraw##*/}"
+          aws route53 list-resource-record-sets --hosted-zone-id "$zid" --output json > /tmp/rrs.json
+          python3 - <<PY
           import json, subprocess
           zid = "${zid}"
           rrs = json.load(open("/tmp/rrs.json"))["ResourceRecordSets"]
-          changes = [{"Action": "DELETE", "ResourceRecordSet": r} for r in rrs if r["Type"] not in ("NS", "SOA")]
+          changes = [{"Action":"DELETE","ResourceRecordSet": r} for r in rrs if r["Type"] not in ("NS","SOA")]
           if changes:
               body = json.dumps({"Changes": changes})
-              subprocess.check_call([
-                  "aws", "route53", "change-resource-record-sets",
-                  "--hosted-zone-id", zid, "--change-batch", body,
-              ])
-          print("deleting zone", zid)
+              subprocess.check_call(["aws","route53","change-resource-record-sets","--hosted-zone-id",zid,"--change-batch",body])
+          print("deleting", zid)
           PY
-            aws route53 delete-hosted-zone --id "$zid"
-          done
+          aws route53 delete-hosted-zone --id "$zid"
 
-      - name: Sync global Terraform state (drop destroyed addrs)
+      - name: Patch global TF state
+        env:
+          ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          ACCOUNT="${{ vars.AWS_ACCOUNT_ID }}"
-          STATE_BUCKET="popo-tfstate-${ACCOUNT}"
-          KEY="global/terraform.tfstate"
-          aws s3 cp "s3://${STATE_BUCKET}/${KEY}" /tmp/global.tfstate
-          python3 <<'PY'
+          KEY=global/terraform.tfstate
+          BUCKET="popo-tfstate-${ACCOUNT}"
+          aws s3 cp "s3://${BUCKET}/${KEY}" /tmp/global.tfstate
+          python3 - <<'PY'
           import json
-          path="/tmp/global.tfstate"
+          path = "/tmp/global.tfstate"
           with open(path) as f:
-            state=json.load(f)
-          drop_types={
-            "aws_route53_zone",
-            "aws_cloudtrail",
-            "aws_s3_bucket",
-            "aws_s3_bucket_public_access_block",
-            "aws_s3_bucket_server_side_encryption_configuration",
-            "aws_s3_bucket_lifecycle_configuration",
-            "aws_s3_bucket_policy",
-            "aws_guardduty_detector",
-          }
-          # Only drop cloudtrail bucket resources + route53 + guardduty — keep tfstate bucket/OIDC.
-          keep=[]
-          for r in state.get("resources",[]):
-            name=r.get("name","")
-            typ=r.get("type","")
-            if typ=="aws_route53_zone":
-              continue
-            if typ=="aws_cloudtrail":
-              continue
-            if typ=="aws_guardduty_detector":
-              continue
-            if typ.startswith("aws_s3_") and name.startswith("cloudtrail"):
-              continue
-            keep.append(r)
-          state["resources"]=keep
-          state["serial"]=int(state.get("serial",0))+1
-          with open(path,"w") as f:
-            json.dump(state,f)
-          print("kept", len(keep), "resources")
+              state = json.load(f)
+          keep = []
+          for r in state.get("resources", []):
+              typ = r.get("type", "")
+              name = r.get("name", "")
+              if typ in ("aws_route53_zone", "aws_cloudtrail", "aws_guardduty_detector"):
+                  continue
+              if typ.startswith("aws_s3_") and name.startswith("cloudtrail"):
+                  continue
+              keep.append(r)
+          state["resources"] = keep
+          state["serial"] = int(state.get("serial", 0)) + 1
+          with open(path, "w") as f:
+              json.dump(state, f)
+          print("kept", len(keep))
           PY
-          aws s3 cp /tmp/global.tfstate "s3://${STATE_BUCKET}/${KEY}"
+          aws s3 cp /tmp/global.tfstate "s3://${BUCKET}/${KEY}"
 
-      - name: Verify leftovers
+      - name: Verify
         run: |
           set -euo pipefail
-          echo "=== GuardDuty ==="
-          aws guardduty list-detectors --query 'DetectorIds' --output text
-          echo "=== CloudTrail ==="
-          aws cloudtrail describe-trails --query 'trailList[].Name' --output text || true
-          echo "=== Route53 ==="
-          aws route53 list-hosted-zones --query 'HostedZones[].Name' --output text || true
-          echo "=== S3 ==="
-          aws s3api list-buckets --query 'Buckets[].Name' --output text
-          echo "DONE"
+          echo "GuardDuty:" $(aws guardduty list-detectors --query 'DetectorIds' --output text)
+          echo "CloudTrail:" $(aws cloudtrail describe-trails --query 'trailList[].Name' --output text)
+          echo "Route53:" $(aws route53 list-hosted-zones --query 'HostedZones[].Name' --output text)
+          echo "S3:" $(aws s3api list-buckets --query 'Buckets[].Name' --output text)
