@@ -1,9 +1,12 @@
 /**
  * Token + PKCE state storage.
- * sessionStorage only (not localStorage) to limit XSS persistence across tabs/sessions.
+ * - Session tokens: localStorage (shared across tabs in the same browser profile).
+ * - PKCE pending: sessionStorage (one-time, tab-scoped).
  */
 
 const PREFIX = "popo.auth.";
+const SESSION_KEY = `${PREFIX}session`;
+const PENDING_KEY = `${PREFIX}pending`;
 
 export type StoredSession = {
   accessToken: string;
@@ -21,28 +24,41 @@ export type PendingAuth = {
   createdAt: number;
 };
 
-function get(key: string): string | null {
+function read(store: Storage, key: string): string | null {
   try {
-    return sessionStorage.getItem(PREFIX + key);
+    return store.getItem(key);
   } catch {
     return null;
   }
 }
 
-function set(key: string, value: string): void {
-  sessionStorage.setItem(PREFIX + key, value);
+function write(store: Storage, key: string, value: string): void {
+  store.setItem(key, value);
 }
 
-function remove(key: string): void {
-  sessionStorage.removeItem(PREFIX + key);
+function remove(store: Storage, key: string): void {
+  store.removeItem(key);
+}
+
+/** Migrate older sessionStorage sessions once so existing logins survive the switch. */
+function migrateSessionFromSessionStorage(): void {
+  try {
+    if (localStorage.getItem(SESSION_KEY)) return;
+    const legacy = sessionStorage.getItem(SESSION_KEY);
+    if (!legacy) return;
+    localStorage.setItem(SESSION_KEY, legacy);
+    sessionStorage.removeItem(SESSION_KEY);
+  } catch {
+    /* ignore quota / private mode */
+  }
 }
 
 export function savePendingAuth(pending: PendingAuth): void {
-  set("pending", JSON.stringify(pending));
+  write(sessionStorage, PENDING_KEY, JSON.stringify(pending));
 }
 
 export function loadPendingAuth(): PendingAuth | null {
-  const raw = get("pending");
+  const raw = read(sessionStorage, PENDING_KEY);
   if (!raw) return null;
   try {
     return JSON.parse(raw) as PendingAuth;
@@ -52,15 +68,22 @@ export function loadPendingAuth(): PendingAuth | null {
 }
 
 export function clearPendingAuth(): void {
-  remove("pending");
+  remove(sessionStorage, PENDING_KEY);
 }
 
 export function saveSession(session: StoredSession): void {
-  set("session", JSON.stringify(session));
+  write(localStorage, SESSION_KEY, JSON.stringify(session));
+  // Drop legacy copy so tabs don't diverge.
+  try {
+    sessionStorage.removeItem(SESSION_KEY);
+  } catch {
+    /* ignore */
+  }
 }
 
 export function loadSession(): StoredSession | null {
-  const raw = get("session");
+  migrateSessionFromSessionStorage();
+  const raw = read(localStorage, SESSION_KEY);
   if (!raw) return null;
   try {
     return JSON.parse(raw) as StoredSession;
@@ -70,10 +93,20 @@ export function loadSession(): StoredSession | null {
 }
 
 export function clearSession(): void {
-  remove("session");
+  remove(localStorage, SESSION_KEY);
+  try {
+    sessionStorage.removeItem(SESSION_KEY);
+  } catch {
+    /* ignore */
+  }
 }
 
 export function clearAllAuthStorage(): void {
   clearPendingAuth();
   clearSession();
+}
+
+/** True when another tab wrote/cleared the shared session key. */
+export function isSessionStorageEvent(ev: StorageEvent): boolean {
+  return ev.storageArea === localStorage && ev.key === SESSION_KEY;
 }

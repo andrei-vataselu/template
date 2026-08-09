@@ -64,6 +64,14 @@ output "budget_name" {
   value = module.observability.budget_name
 }
 
+output "cloudwatch_dashboard" {
+  value = module.observability.dashboard_name
+}
+
+output "cloudwatch_dashboard_url" {
+  value = module.observability.dashboard_url
+}
+
 output "resource_group_name" {
   value = module.resource_group_env.name
 }

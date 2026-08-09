@@ -29,13 +29,12 @@ for i in $(seq 1 180); do
   esac
 done
 
-# InstanceWarmup must exceed cold-boot docker builds on t4g.micro (~15–25m).
-# ASG ELB grace can treat a booting instance as healthy before /api/health works;
-# short warmup then kills the old healthy box → 502.
+# InstanceWarmup must cover cold-boot docker builds on t4g.micro (~8–15m with /healthz).
+# Too short → ASG kills the old healthy box before the new one passes ELB checks → 502.
 REFRESH_ID=$(aws autoscaling start-instance-refresh \
   --auto-scaling-group-name "$ASG" \
   --region "$REGION" \
-  --preferences MinHealthyPercentage=100,InstanceWarmup=2100,SkipMatching=false \
+  --preferences MinHealthyPercentage=100,InstanceWarmup=900,SkipMatching=false \
   --query InstanceRefreshId --output text)
 echo "InstanceRefreshId=$REFRESH_ID"
 

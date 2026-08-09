@@ -27,6 +27,24 @@ async function main(): Promise<void> {
   );
   app.use(morgan(config.nodeEnv === "production" ? "combined" : "dev"));
 
+  // Lightweight structured access line for CloudWatch Logs Insights (when docker → awslogs).
+  app.use((req, res, next) => {
+    const started = Date.now();
+    res.on("finish", () => {
+      console.log(
+        JSON.stringify({
+          msg: "http",
+          method: req.method,
+          path: req.path,
+          status: res.statusCode,
+          ms: Date.now() - started,
+          reqId: req.get("x-amzn-trace-id") ?? req.get("x-request-id") ?? undefined,
+        }),
+      );
+    });
+    next();
+  });
+
   if (config.allowedOrigins.length > 0) {
     app.use(
       cors({

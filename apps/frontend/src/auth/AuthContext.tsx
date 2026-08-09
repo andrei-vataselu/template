@@ -17,7 +17,7 @@ import {
   refreshSession,
   type IdTokenClaims,
 } from "./cognitoAuth";
-import type { StoredSession } from "./session";
+import { isSessionStorageEvent, type StoredSession } from "./session";
 
 type AuthStatus = "loading" | "anonymous" | "authenticated" | "unconfigured";
 
@@ -59,6 +59,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void hydrate();
+  }, [hydrate]);
+
+  // Keep tabs in sync when another tab signs in / out (localStorage session).
+  useEffect(() => {
+    const onStorage = (ev: StorageEvent) => {
+      if (!isSessionStorageEvent(ev)) return;
+      void hydrate();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, [hydrate]);
 
   const login = useCallback(async () => {

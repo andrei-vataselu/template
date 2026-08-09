@@ -204,7 +204,8 @@ module "compute" {
   origin_fqdn              = local.origin_fqdn
   origin_api_fqdn          = local.origin_api_fqdn
   allowed_origins          = local.allowed_origins
-  api_base_url             = local.api_fqdn != "" ? "https://${local.api_fqdn}" : ""
+  # Same-origin /api via site host (ALB path rule) — see dev comment.
+  api_base_url             = ""
   zone_id                  = var.domain_name != "" ? data.aws_route53_zone.main[0].zone_id : ""
   asg_min_size             = var.asg_min_size
   asg_desired_capacity     = var.asg_desired_capacity

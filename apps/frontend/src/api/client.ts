@@ -41,7 +41,12 @@ export async function apiFetch<T>(path: string, options: ApiOptions = {}): Promi
     headers.set("Authorization", `Bearer ${token}`);
   }
 
-  const res = await fetch(resolveApiUrl(path), { ...options, headers });
+  let res: Response;
+  try {
+    res = await fetch(resolveApiUrl(path), { ...options, headers });
+  } catch {
+    throw new ApiError("Network error reaching API", 0, "network_error");
+  }
 
   if (res.status === 401 && options.auth) {
     logoutLocal();

@@ -93,6 +93,18 @@ resource "aws_cloudwatch_log_group" "app" {
   tags              = var.tags
 }
 
+resource "aws_cloudwatch_log_group" "web" {
+  name              = "/${var.project_name}/${var.environment}/web"
+  retention_in_days = 14
+  tags              = var.tags
+}
+
+resource "aws_cloudwatch_log_group" "gateway" {
+  name              = "/${var.project_name}/${var.environment}/gateway"
+  retention_in_days = 14
+  tags              = var.tags
+}
+
 resource "aws_cloudwatch_metric_alarm" "asg_cpu" {
   alarm_name          = "${var.project_name}-${var.environment}-asg-cpu"
   comparison_operator = "GreaterThanThreshold"
@@ -218,4 +230,319 @@ resource "aws_cloudwatch_metric_alarm" "alb_target_4xx" {
   }
 
   tags = var.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
+  alarm_name          = "${var.project_name}-${var.environment}-alb-5xx"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "HTTPCode_ELB_5XX_Count"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 5
+  treat_missing_data  = "notBreaching"
+  alarm_description   = "ALB generating 5xx (often no healthy targets / gateway down) — check ASG + /healthz"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    LoadBalancer = var.alb_arn_suffix
+  }
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "alb_target_5xx" {
+  alarm_name          = "${var.project_name}-${var.environment}-alb-target-5xx"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "HTTPCode_Target_5XX_Count"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 10
+  treat_missing_data  = "notBreaching"
+  alarm_description   = "Targets returning 5xx — check API/container logs"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    LoadBalancer = var.alb_arn_suffix
+  }
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "alb_p95_latency" {
+  alarm_name          = "${var.project_name}-${var.environment}-alb-p95-latency"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "TargetResponseTime"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  extended_statistic  = "p95"
+  threshold           = 2
+  treat_missing_data  = "notBreaching"
+  alarm_description   = "ALB target p95 latency > 2s"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    LoadBalancer = var.alb_arn_suffix
+  }
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "rds_cpu" {
+  alarm_name          = "${var.project_name}-${var.environment}-rds-cpu"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/RDS"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 80
+  alarm_description   = "RDS CPU high"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    DBInstanceIdentifier = var.db_instance_id
+  }
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "rds_connections" {
+  alarm_name          = "${var.project_name}-${var.environment}-rds-connections"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "DatabaseConnections"
+  namespace           = "AWS/RDS"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 40
+  treat_missing_data  = "notBreaching"
+  alarm_description   = "RDS connection count elevated for micro instance"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    DBInstanceIdentifier = var.db_instance_id
+  }
+
+  tags = var.tags
+}
+
+data "aws_region" "current" {}
+
+locals {
+  web_host_metrics = var.enable_web_alarms && var.web_target_group_arn_suffix != "" ? [
+    ["AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", var.web_target_group_arn_suffix, "LoadBalancer", var.alb_arn_suffix, { label = "healthy", color = "#2ca02c" }],
+    [".", "UnHealthyHostCount", ".", ".", ".", ".", { label = "unhealthy", color = "#d62728" }],
+  ] : [
+    ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", var.alb_arn_suffix, { label = "web TG not configured", visible = false }],
+  ]
+
+  asg_cpu_metrics = concat(
+    [
+      ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", var.asg_name, { label = "app" }],
+    ],
+    var.enable_web_alarms && var.web_asg_name != "" ? [
+      ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", var.web_asg_name, { label = "web" }],
+    ] : [],
+  )
+
+  dashboard_alarm_arns = compact([
+    aws_cloudwatch_metric_alarm.asg_cpu.arn,
+    aws_cloudwatch_metric_alarm.unhealthy_hosts.arn,
+    try(aws_cloudwatch_metric_alarm.web_unhealthy_hosts[0].arn, ""),
+    try(aws_cloudwatch_metric_alarm.web_asg_cpu[0].arn, ""),
+    aws_cloudwatch_metric_alarm.rds_storage.arn,
+    aws_cloudwatch_metric_alarm.alb_target_4xx.arn,
+    aws_cloudwatch_metric_alarm.alb_5xx.arn,
+    aws_cloudwatch_metric_alarm.alb_target_5xx.arn,
+    aws_cloudwatch_metric_alarm.alb_p95_latency.arn,
+    aws_cloudwatch_metric_alarm.rds_cpu.arn,
+    aws_cloudwatch_metric_alarm.rds_connections.arn,
+  ])
+}
+
+resource "aws_cloudwatch_dashboard" "main" {
+  dashboard_name = "${var.project_name}-${var.environment}"
+
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type   = "text"
+        x      = 0
+        y      = 0
+        width  = 24
+        height = 1
+        properties = {
+          markdown = "# ${var.project_name} / ${var.environment}\nDefault ops view — ALB, ASG, RDS. Alerts → SNS `${aws_sns_topic.alerts.name}`."
+        }
+      },
+      {
+        type   = "metric"
+        x      = 0
+        y      = 1
+        width  = 8
+        height = 6
+        properties = {
+          title   = "ALB request count"
+          region  = data.aws_region.current.name
+          view    = "timeSeries"
+          stacked = false
+          period  = 60
+          stat    = "Sum"
+          metrics = [
+            ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", var.alb_arn_suffix],
+          ]
+        }
+      },
+      {
+        type   = "metric"
+        x      = 8
+        y      = 1
+        width  = 8
+        height = 6
+        properties = {
+          title   = "ALB 4xx / 5xx"
+          region  = data.aws_region.current.name
+          view    = "timeSeries"
+          stacked = false
+          period  = 60
+          stat    = "Sum"
+          metrics = [
+            ["AWS/ApplicationELB", "HTTPCode_Target_4XX_Count", "LoadBalancer", var.alb_arn_suffix, { label = "target 4xx", color = "#ff7f0e" }],
+            [".", "HTTPCode_Target_5XX_Count", ".", ".", { label = "target 5xx", color = "#d62728" }],
+            [".", "HTTPCode_ELB_5XX_Count", ".", ".", { label = "ELB 5xx", color = "#9467bd" }],
+          ]
+        }
+      },
+      {
+        type   = "metric"
+        x      = 16
+        y      = 1
+        width  = 8
+        height = 6
+        properties = {
+          title   = "Target response time"
+          region  = data.aws_region.current.name
+          view    = "timeSeries"
+          stacked = false
+          period  = 60
+          metrics = [
+            ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", var.alb_arn_suffix, { label = "avg", stat = "Average" }],
+            ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", var.alb_arn_suffix, { label = "p95", stat = "p95" }],
+          ]
+        }
+      },
+      {
+        type   = "metric"
+        x      = 0
+        y      = 7
+        width  = 8
+        height = 6
+        properties = {
+          title   = "Healthy / unhealthy hosts (API)"
+          region  = data.aws_region.current.name
+          view    = "timeSeries"
+          stacked = false
+          period  = 60
+          stat    = "Average"
+          metrics = [
+            ["AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", var.target_group_arn_suffix, "LoadBalancer", var.alb_arn_suffix, { label = "healthy", color = "#2ca02c" }],
+            [".", "UnHealthyHostCount", ".", ".", ".", ".", { label = "unhealthy", color = "#d62728" }],
+          ]
+        }
+      },
+      {
+        type   = "metric"
+        x      = 8
+        y      = 7
+        width  = 8
+        height = 6
+        properties = {
+          title   = "Healthy / unhealthy hosts (web)"
+          region  = data.aws_region.current.name
+          view    = "timeSeries"
+          stacked = false
+          period  = 60
+          stat    = "Average"
+          metrics = local.web_host_metrics
+        }
+      },
+      {
+        type   = "metric"
+        x      = 16
+        y      = 7
+        width  = 8
+        height = 6
+        properties = {
+          title   = "ASG CPU"
+          region  = data.aws_region.current.name
+          view    = "timeSeries"
+          stacked = false
+          period  = 300
+          stat    = "Average"
+          metrics = local.asg_cpu_metrics
+        }
+      },
+      {
+        type   = "metric"
+        x      = 0
+        y      = 13
+        width  = 12
+        height = 6
+        properties = {
+          title   = "RDS CPU / connections"
+          region  = data.aws_region.current.name
+          view    = "timeSeries"
+          stacked = false
+          period  = 300
+          metrics = [
+            ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", var.db_instance_id, { label = "CPU %", stat = "Average" }],
+            [".", "DatabaseConnections", ".", ".", { label = "connections", stat = "Average", yAxis = "right" }],
+          ]
+          yAxis = {
+            left  = { min = 0, max = 100 }
+            right = { min = 0 }
+          }
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 13
+        width  = 12
+        height = 6
+        properties = {
+          title   = "RDS free storage"
+          region  = data.aws_region.current.name
+          view    = "timeSeries"
+          stacked = false
+          period  = 300
+          stat    = "Average"
+          metrics = [
+            ["AWS/RDS", "FreeStorageSpace", "DBInstanceIdentifier", var.db_instance_id, { label = "bytes free" }],
+          ]
+        }
+      },
+      {
+        type   = "alarm"
+        x      = 0
+        y      = 19
+        width  = 24
+        height = 4
+        properties = {
+          title  = "Alarms"
+          alarms = local.dashboard_alarm_arns
+        }
+      },
+    ]
+  })
 }

@@ -172,7 +172,9 @@ def _start_refresh(asg, name: str) -> str | None:
             Strategy="Rolling",
             Preferences={
                 "MinHealthyPercentage": 100,
-                "InstanceWarmup": 2100,
+                # Boot builds images on t4g.micro — 10m is enough with healthz bypass;
+                # 35m left deploys looking "broken" for half an hour.
+                "InstanceWarmup": 600,
             },
         )
         return resp.get("InstanceRefreshId")

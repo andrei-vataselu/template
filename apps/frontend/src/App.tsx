@@ -7,11 +7,11 @@ import { ensureHttpsOrigin } from "./auth/config";
 
 type Health = {
   ok: boolean;
-  app: string;
-  environment: string;
-  authConfigured: boolean;
+  app?: string;
+  environment?: string;
+  authConfigured?: boolean;
   directory?: string;
-  time: string;
+  time?: string;
 };
 
 type Info = {
@@ -121,17 +121,21 @@ function HomePage() {
 
     async function loadPublic() {
       try {
-        const [healthJson, infoJson] = await Promise.all([
-          apiFetch<Health>("/api/health"),
-          apiFetch<Info>("/api/info"),
-        ]);
-        if (!cancelled) {
-          setHealth(healthJson);
-          setInfo(infoJson);
-          setError(null);
+        // Health alone drives the status card; info is best-effort (origin/WAF can 403 it).
+        const healthJson = await apiFetch<Health>("/api/health");
+        if (cancelled) return;
+        setHealth(healthJson);
+        setError(null);
+        try {
+          const infoJson = await apiFetch<Info>("/api/info");
+          if (!cancelled) setInfo(infoJson);
+        } catch {
+          if (!cancelled) setInfo(null);
         }
       } catch (err) {
         if (!cancelled) {
+          setHealth(null);
+          setInfo(null);
           setError(err instanceof Error ? err.message : "Failed to reach API");
         }
       }
@@ -263,12 +267,22 @@ function HomePage() {
                 <strong className="ok">{health.ok ? "ok" : "down"}</strong>
               </li>
               <li>
-                <span>Directory</span>
-                <strong>{health.directory ?? "—"}</strong>
+                <span>Auth</span>
+                <strong>
+                  {info?.auth.configured
+                    ? info.auth.inviteOnly
+                      ? "Cognito (invite-only)"
+                      : "Cognito"
+                    : health.authConfigured
+                      ? "configured"
+                      : info
+                        ? "off"
+                        : "—"}
+                </strong>
               </li>
               <li>
-                <span>Cognito</span>
-                <strong>{health.authConfigured ? "configured" : "off"}</strong>
+                <span>RBAC</span>
+                <strong>{info?.auth.rbac ?? health.directory ?? "—"}</strong>
               </li>
             </ul>
           ) : (
