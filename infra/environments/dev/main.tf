@@ -75,28 +75,6 @@ module "security_groups" {
   tags         = local.common_tags
 }
 
-module "compute" {
-  source = "../../modules/compute"
-
-  project_name          = var.project_name
-  environment           = var.environment
-  subnet_ids            = module.networking.public_subnet_ids
-  alb_security_group_id = module.security_groups.alb_security_group_id
-  app_security_group_id = module.security_groups.app_security_group_id
-  instance_type         = var.instance_type
-  root_volume_gb        = var.root_volume_gb
-  origin_secret_arn     = aws_secretsmanager_secret.origin_header.arn
-  app_git_url           = var.app_git_url
-  origin_fqdn           = local.origin_fqdn
-  zone_id               = var.domain_name != "" ? data.aws_route53_zone.main[0].zone_id : ""
-  asg_min_size          = var.asg_min_size
-  asg_desired_capacity  = var.asg_desired_capacity
-  asg_max_size          = var.asg_max_size
-  tags                  = local.common_tags
-
-  depends_on = [aws_secretsmanager_secret_version.origin_header]
-}
-
 module "database" {
   source = "../../modules/database"
 
@@ -111,6 +89,65 @@ module "database" {
   deletion_protection   = var.db_deletion_protection
   skip_final_snapshot   = var.db_skip_final_snapshot
   tags                  = local.common_tags
+}
+
+# Cognito before compute so EC2 boots with pool/client IDs.
+# Callbacks use the custom domain (CloudFront aliases it) — avoids edge↔compute cycle.
+module "cognito" {
+  source = "../../modules/cognito"
+
+  project_name        = var.project_name
+  environment         = var.environment
+  require_mfa         = true
+  deletion_protection = var.environment == "prod"
+  callback_urls = concat(
+    var.domain_name != "" ? ["https://${local.site_fqdn}/callback"] : [],
+    [
+      "https://localhost/callback",
+      "http://localhost:5173/callback",
+    ]
+  )
+  logout_urls = concat(
+    var.domain_name != "" ? ["https://${local.site_fqdn}/logout"] : [],
+    [
+      "https://localhost/logout",
+      "http://localhost:5173/logout",
+    ]
+  )
+  tags = local.common_tags
+}
+
+module "compute" {
+  source = "../../modules/compute"
+
+  project_name             = var.project_name
+  environment              = var.environment
+  subnet_ids               = module.networking.public_subnet_ids
+  alb_security_group_id    = module.security_groups.alb_security_group_id
+  app_security_group_id    = module.security_groups.app_security_group_id
+  instance_type            = var.instance_type
+  root_volume_gb           = var.root_volume_gb
+  origin_secret_arn        = aws_secretsmanager_secret.origin_header.arn
+  db_secret_arn            = module.database.master_user_secret_arn
+  cognito_region           = var.aws_region
+  cognito_user_pool_id     = module.cognito.user_pool_id
+  cognito_user_pool_arn    = module.cognito.user_pool_arn
+  cognito_spa_client_id    = module.cognito.spa_client_id
+  cognito_hosted_ui_domain = module.cognito.hosted_ui_domain
+  bootstrap_admin_emails   = var.alert_email
+  app_git_url              = var.app_git_url
+  origin_fqdn              = local.origin_fqdn
+  zone_id                  = var.domain_name != "" ? data.aws_route53_zone.main[0].zone_id : ""
+  asg_min_size             = var.asg_min_size
+  asg_desired_capacity     = var.asg_desired_capacity
+  asg_max_size             = var.asg_max_size
+  tags                     = local.common_tags
+
+  depends_on = [
+    aws_secretsmanager_secret_version.origin_header,
+    module.database,
+    module.cognito,
+  ]
 }
 
 module "edge" {
@@ -130,30 +167,6 @@ module "edge" {
   origin_header_value = random_password.origin_header.result
   allowed_ip_cidrs    = var.allowed_ip_cidrs
   tags                = local.common_tags
-}
-
-module "cognito" {
-  source = "../../modules/cognito"
-
-  project_name        = var.project_name
-  environment         = var.environment
-  require_mfa         = true
-  deletion_protection = var.environment == "prod"
-  callback_urls = concat(
-    var.domain_name != "" ? ["https://${local.site_fqdn}/callback"] : [],
-    [
-      "https://${module.edge.distribution_domain_name}/callback",
-      "https://localhost/callback",
-    ]
-  )
-  logout_urls = concat(
-    var.domain_name != "" ? ["https://${local.site_fqdn}/logout"] : [],
-    [
-      "https://${module.edge.distribution_domain_name}/logout",
-      "https://localhost/logout",
-    ]
-  )
-  tags = local.common_tags
 }
 
 module "observability" {

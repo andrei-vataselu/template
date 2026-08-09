@@ -38,6 +38,14 @@ output "cognito_spa_client_id" {
   value = module.cognito.spa_client_id
 }
 
+output "cognito_hosted_ui_domain" {
+  value = module.cognito.hosted_ui_domain
+}
+
+output "cognito_user_pool_arn" {
+  value = module.cognito.user_pool_arn
+}
+
 output "budget_name" {
   value = module.observability.budget_name
 }

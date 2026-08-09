@@ -1,4 +1,21 @@
 services:
+  db:
+    profiles: ["local"]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: localdev
+      POSTGRES_DB: app
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    mem_limit: 256m
+
   gateway:
     build: ./gateway
     ports:
@@ -25,6 +42,14 @@ services:
       APP_NAME: ${APP_NAME:-template}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:-}
+      DATABASE_SSL: ${DATABASE_SSL:-0}
+      COGNITO_REGION: ${COGNITO_REGION:-}
+      COGNITO_USER_POOL_ID: ${COGNITO_USER_POOL_ID:-}
+      COGNITO_CLIENT_ID: ${COGNITO_CLIENT_ID:-}
+      BOOTSTRAP_ADMIN_EMAILS: ${BOOTSTRAP_ADMIN_EMAILS:-}
+      BOOTSTRAP_ADMIN_SUBS: ${BOOTSTRAP_ADMIN_SUBS:-}
+      AWS_REGION: ${COGNITO_REGION:-${AWS_REGION:-eu-west-1}}
     expose:
       - "3000"
     restart: unless-stopped
@@ -50,7 +75,13 @@ services:
       retries: 5
 
   web:
-    build: ../apps/frontend
+    build:
+      context: ../apps/frontend
+      args:
+        VITE_COGNITO_REGION: ${VITE_COGNITO_REGION:-${COGNITO_REGION:-}}
+        VITE_COGNITO_USER_POOL_ID: ${VITE_COGNITO_USER_POOL_ID:-${COGNITO_USER_POOL_ID:-}}
+        VITE_COGNITO_CLIENT_ID: ${VITE_COGNITO_CLIENT_ID:-${COGNITO_CLIENT_ID:-}}
+        VITE_COGNITO_DOMAIN: ${VITE_COGNITO_DOMAIN:-${COGNITO_DOMAIN:-}}
     expose:
       - "8080"
     restart: unless-stopped
@@ -60,6 +91,9 @@ services:
       - ALL
     mem_limit: 128m
     pids_limit: 100
+
+volumes:
+  pgdata:
 
 networks:
   default:

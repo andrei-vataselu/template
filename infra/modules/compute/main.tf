@@ -4,9 +4,16 @@ data "aws_ssm_parameter" "al2023_arm" {
 
 locals {
   user_data = base64encode(templatefile("${path.module}/user_data.sh.tftpl", {
-    origin_secret_arn = var.origin_secret_arn
-    environment       = var.environment
-    app_git_url       = var.app_git_url
+    origin_secret_arn         = var.origin_secret_arn
+    db_secret_arn             = var.db_secret_arn
+    db_name                   = var.db_name
+    environment               = var.environment
+    app_git_url               = var.app_git_url
+    cognito_region            = var.cognito_region
+    cognito_user_pool_id      = var.cognito_user_pool_id
+    cognito_spa_client_id     = var.cognito_spa_client_id
+    cognito_hosted_ui_domain  = var.cognito_hosted_ui_domain
+    bootstrap_admin_emails    = var.bootstrap_admin_emails
   }))
 
   # Use HTTPS listener when we have a custom origin hostname + ACM cert
@@ -50,19 +57,55 @@ resource "aws_iam_role_policy" "secrets_read" {
 
   policy = jsonencode({
     Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "TaggedAppSecrets"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/Application" = lookup(var.tags, "Application", "template")
+            "aws:ResourceTag/Environment" = var.environment
+          }
+        }
+      },
+      {
+        Sid      = "RdsMasterSecret"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+        Resource = [var.db_secret_arn]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "cognito_admin" {
+  name = "${var.project_name}-${var.environment}-cognito-admin"
+  role = aws_iam_role.app.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
     Statement = [{
+      Sid    = "CognitoUserAdmin"
       Effect = "Allow"
       Action = [
-        "secretsmanager:GetSecretValue",
-        "secretsmanager:DescribeSecret"
+        "cognito-idp:AdminCreateUser",
+        "cognito-idp:AdminDeleteUser",
+        "cognito-idp:AdminDisableUser",
+        "cognito-idp:AdminEnableUser",
+        "cognito-idp:AdminGetUser",
+        "cognito-idp:AdminListGroupsForUser",
+        "cognito-idp:AdminAddUserToGroup",
+        "cognito-idp:AdminRemoveUserFromGroup",
+        "cognito-idp:ListUsers",
+        "cognito-idp:DescribeUserPool",
+        "cognito-idp:DescribeUserPoolClient"
       ]
-      Resource = "*"
-      Condition = {
-        StringEquals = {
-          "aws:ResourceTag/Application" = lookup(var.tags, "Application", "template")
-          "aws:ResourceTag/Environment" = var.environment
-        }
-      }
+      Resource = [var.cognito_user_pool_arn]
     }]
   })
 }

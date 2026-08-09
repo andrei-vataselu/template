@@ -18,6 +18,36 @@ variable "origin_secret_arn" {
   description = "Secrets Manager ARN holding the CloudFront origin verification header value"
   type        = string
 }
+variable "db_secret_arn" {
+  description = "RDS master user secret ARN (AWS-managed). Used to build DATABASE_URL at boot."
+  type        = string
+  sensitive   = true
+}
+variable "db_name" {
+  type    = string
+  default = "app"
+}
+variable "cognito_region" {
+  type = string
+}
+variable "cognito_user_pool_id" {
+  type = string
+}
+variable "cognito_user_pool_arn" {
+  type = string
+}
+variable "cognito_spa_client_id" {
+  type = string
+}
+variable "cognito_hosted_ui_domain" {
+  description = "Cognito domain prefix (not full URL), e.g. popo-dev-a1b2c3"
+  type        = string
+}
+variable "bootstrap_admin_emails" {
+  description = "Comma-separated emails that receive admin RBAC on first sign-in (matched via Cognito, never stored)"
+  type        = string
+  default     = ""
+}
 variable "app_git_url" {
   description = "Optional git URL for full apps (React/Node). Empty uses bootstrap UI."
   type        = string

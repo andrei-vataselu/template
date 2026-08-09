@@ -53,6 +53,7 @@ mkdir -p "$APP_DIR"
 # Fetch origin secret from Secrets Manager via the instance role
 # (keeps the secret out of user-data, which is readable through the EC2 API)
 command -v aws >/dev/null 2>&1 || dnf install -y awscli
+command -v python3 >/dev/null 2>&1 || dnf install -y python3
 IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
 AWS_REGION=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
 ORIGIN_HEADER_VALUE=$(aws secretsmanager get-secret-value \
@@ -60,11 +61,37 @@ ORIGIN_HEADER_VALUE=$(aws secretsmanager get-secret-value \
   --region "$AWS_REGION" \
   --query SecretString --output text)
 
+# RDS master secret (JSON) → DATABASE_URL (password never baked into Terraform state of the app)
+DB_SECRET_JSON=$(aws secretsmanager get-secret-value \
+  --secret-id "${db_secret_arn}" \
+  --region "$AWS_REGION" \
+  --query SecretString --output text)
+DB_USER=$(printf '%s' "$DB_SECRET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["username"])')
+DB_PASS=$(printf '%s' "$DB_SECRET_JSON" | python3 -c 'import json,sys,urllib.parse; print(urllib.parse.quote(json.load(sys.stdin)["password"], safe=""))')
+DB_HOST=$(printf '%s' "$DB_SECRET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["host"])')
+DB_PORT=$(printf '%s' "$DB_SECRET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("port", 5432))')
+DB_NAME=$(printf '%s' "$DB_SECRET_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("dbname") or d.get("database") or "${db_name}")')
+DATABASE_URL="postgres://$${DB_USER}:$${DB_PASS}@$${DB_HOST}:$${DB_PORT}/$${DB_NAME}?sslmode=require"
+
+# AWS runtime: use RDS only (compose `db` service is local-profile)
 cat >"$APP_DIR/.env" <<EOF
 APP_ENV=${environment}
 APP_NAME=template
 ORIGIN_HEADER_VALUE=$ORIGIN_HEADER_VALUE
 SKIP_ORIGIN_CHECK=0
+AWS_REGION=$AWS_REGION
+COGNITO_REGION=${cognito_region}
+COGNITO_USER_POOL_ID=${cognito_user_pool_id}
+COGNITO_CLIENT_ID=${cognito_spa_client_id}
+COGNITO_DOMAIN=${cognito_hosted_ui_domain}
+VITE_COGNITO_REGION=${cognito_region}
+VITE_COGNITO_USER_POOL_ID=${cognito_user_pool_id}
+VITE_COGNITO_CLIENT_ID=${cognito_spa_client_id}
+VITE_COGNITO_DOMAIN=${cognito_hosted_ui_domain}
+DATABASE_URL=$DATABASE_URL
+DATABASE_SSL=1
+COMPOSE_PROFILES=
+BOOTSTRAP_ADMIN_EMAILS=${bootstrap_admin_emails}
 EOF
 chmod 600 "$APP_DIR/.env"
 
