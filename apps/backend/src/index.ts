@@ -78,7 +78,7 @@ async function main(): Promise<void> {
       auth: {
         provider: "cognito",
         configured: config.cognito.configured,
-        inviteOnly: true,
+        inviteOnly: false,
         rbac: "custom-app-directory",
         mfa: "TOTP required when pool is live",
       },

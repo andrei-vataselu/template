@@ -1,7 +1,9 @@
 import { FormEvent, useEffect, useState } from "react";
 import { apiFetch, ApiError } from "./api/client";
 import { useAuth } from "./auth/AuthContext";
+import { AuthShell } from "./auth/AuthShell";
 import { completeLogin } from "./auth/cognitoAuth";
+import { ensureHttpsOrigin } from "./auth/config";
 
 type Health = {
   ok: boolean;
@@ -209,14 +211,24 @@ function HomePage() {
               Sign out
             </button>
           ) : auth.configured ? (
-            <button
-              type="button"
-              className="btn"
-              onClick={() => void auth.login()}
-              disabled={auth.status === "loading"}
-            >
-              Sign in
-            </button>
+            <>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => window.location.assign("/signup")}
+                disabled={auth.status === "loading"}
+              >
+                Sign up
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => void auth.login()}
+                disabled={auth.status === "loading"}
+              >
+                Sign in
+              </button>
+            </>
           ) : null}
         </div>
       </header>
@@ -348,9 +360,40 @@ function HomePage() {
 }
 
 export default function App() {
+  ensureHttpsOrigin();
   const path = window.location.pathname.replace(/\/+$/, "") || "/";
 
   if (path === "/callback") return <CallbackPage />;
   if (path === "/logout") return <LogoutPage />;
+  if (path === "/login") {
+    return (
+      <AuthShell
+        initialMode="signin"
+        onAuthenticated={() => {
+          window.location.assign("/");
+        }}
+      />
+    );
+  }
+  if (path === "/signup") {
+    return (
+      <AuthShell
+        initialMode="signup"
+        onAuthenticated={() => {
+          window.location.assign("/");
+        }}
+      />
+    );
+  }
+  if (path === "/forgot-password") {
+    return (
+      <AuthShell
+        initialMode="forgot"
+        onAuthenticated={() => {
+          window.location.assign("/");
+        }}
+      />
+    );
+  }
   return <HomePage />;
 }

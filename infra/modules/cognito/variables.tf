@@ -9,7 +9,12 @@ variable "logout_urls" {
   default = ["https://localhost/logout"]
 }
 variable "require_mfa" {
-  description = "Force TOTP MFA for all users (pool is invite-only)"
+  description = "Force TOTP MFA for all users"
+  type        = bool
+  default     = false
+}
+variable "allow_self_signup" {
+  description = "Allow public SignUp (email verification still required)"
   type        = bool
   default     = true
 }
@@ -24,7 +29,22 @@ variable "custom_auth_domain" {
   default     = ""
 }
 variable "zone_id" {
-  description = "Route 53 zone for custom auth domain ACM validation + alias. Required when custom_auth_domain is set."
+  description = "Route 53 zone for custom auth domain + SES DNS. Required when custom_auth_domain or ses_email_domain is set."
+  type        = string
+  default     = ""
+}
+variable "ses_email_domain" {
+  description = "Verified SES domain used to send Cognito emails (e.g. example.com). Empty = Cognito default mail."
+  type        = string
+  default     = ""
+}
+variable "from_email_address" {
+  description = "From address for Cognito mail, e.g. noreply@example.com"
+  type        = string
+  default     = ""
+}
+variable "reply_to_email_address" {
+  description = "Reply-To for Cognito mail (also SES-verified in sandbox)"
   type        = string
   default     = ""
 }

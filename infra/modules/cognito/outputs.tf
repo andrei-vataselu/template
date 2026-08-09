@@ -14,3 +14,11 @@ output "hosted_ui_domain" {
   description = "Hosted UI hostname (custom FQDN) or Cognito prefix (no dots)"
   value       = aws_cognito_user_pool_domain.this.domain
 }
+
+output "ses_domain_identity_arn" {
+  value = try(aws_ses_domain_identity.mail[0].arn, null)
+}
+
+output "from_email_address" {
+  value = var.from_email_address
+}

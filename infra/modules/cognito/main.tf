@@ -1,4 +1,14 @@
-# Guide §7: Cognito Lite-style settings — no SMS, no public sign-up, PKCE SPA client
+terraform {
+  required_providers {
+    aws = {
+      source                = "hashicorp/aws"
+      version               = ">= 5.0"
+      configuration_aliases = [aws.us_east_1]
+    }
+  }
+}
+
+# Guide §7: Cognito — email via SES, optional self-signup, PKCE SPA client
 
 resource "aws_cognito_user_pool" "this" {
   name = "${var.project_name}-${var.environment}"
@@ -28,16 +38,32 @@ resource "aws_cognito_user_pool" "this" {
   }
 
   admin_create_user_config {
-    allow_admin_create_user_only = true
+    allow_admin_create_user_only = !var.allow_self_signup
   }
 
   user_attribute_update_settings {
     attributes_require_verification_before_update = ["email"]
   }
 
+  dynamic "email_configuration" {
+    for_each = local.use_ses ? [1] : []
+    content {
+      email_sending_account = "DEVELOPER"
+      source_arn            = aws_ses_domain_identity.mail[0].arn
+      from_email_address    = var.from_email_address
+      reply_to_email_address = var.reply_to_email_address != "" ? var.reply_to_email_address : null
+    }
+  }
+
   deletion_protection = var.deletion_protection ? "ACTIVE" : "INACTIVE"
 
   tags = var.tags
+
+  depends_on = [
+    aws_ses_domain_dkim.mail,
+    aws_ses_identity_policy.cognito,
+    aws_ses_domain_identity_verification.mail,
+  ]
 }
 
 resource "aws_cognito_user_pool_client" "spa" {
@@ -75,11 +101,93 @@ resource "random_id" "suffix" {
 
 locals {
   use_custom_domain = var.custom_auth_domain != ""
+  use_ses           = var.ses_email_domain != ""
 }
 
-# Cognito custom domains require an ACM cert in the *same region* as the user pool
+# ---------------------------------------------------------------------------
+# SES — Cognito sends verification / forgot-password from your domain
+# ---------------------------------------------------------------------------
+
+resource "aws_ses_domain_identity" "mail" {
+  count  = local.use_ses ? 1 : 0
+  domain = var.ses_email_domain
+}
+
+resource "aws_ses_domain_dkim" "mail" {
+  count  = local.use_ses ? 1 : 0
+  domain = aws_ses_domain_identity.mail[0].domain
+}
+
+resource "aws_route53_record" "ses_verification" {
+  count = local.use_ses ? 1 : 0
+
+  zone_id = var.zone_id
+  name    = "_amazonses.${var.ses_email_domain}"
+  type    = "TXT"
+  ttl     = 600
+  records = [aws_ses_domain_identity.mail[0].verification_token]
+}
+
+resource "aws_route53_record" "ses_dkim" {
+  count = local.use_ses ? 3 : 0
+
+  zone_id = var.zone_id
+  name    = "${aws_ses_domain_dkim.mail[0].dkim_tokens[count.index]}._domainkey.${var.ses_email_domain}"
+  type    = "CNAME"
+  ttl     = 600
+  records = ["${aws_ses_domain_dkim.mail[0].dkim_tokens[count.index]}.dkim.amazonses.com"]
+}
+
+resource "aws_ses_domain_identity_verification" "mail" {
+  count  = local.use_ses ? 1 : 0
+  domain = aws_ses_domain_identity.mail[0].id
+
+  depends_on = [aws_route53_record.ses_verification]
+}
+
+# Sandbox-friendly: also verify the reply-to / bootstrap inbox so mail can deliver
+resource "aws_ses_email_identity" "reply_to" {
+  count = local.use_ses && var.reply_to_email_address != "" ? 1 : 0
+  email = var.reply_to_email_address
+}
+
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
+resource "aws_ses_identity_policy" "cognito" {
+  count = local.use_ses ? 1 : 0
+
+  identity = aws_ses_domain_identity.mail[0].arn
+  name     = "${var.project_name}-${var.environment}-cognito-send"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "AllowCognitoSend"
+      Effect = "Allow"
+      Principal = {
+        Service = "cognito-idp.amazonaws.com"
+      }
+      Action = [
+        "ses:SendEmail",
+        "ses:SendRawEmail",
+      ]
+      Resource = aws_ses_domain_identity.mail[0].arn
+      Condition = {
+        StringEquals = {
+          "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+        }
+      }
+    }]
+  })
+}
+
+# ---------------------------------------------------------------------------
+# Hosted UI domain (custom FQDN needs ACM in us-east-1 — CloudFront-backed)
+# ---------------------------------------------------------------------------
+
 resource "aws_acm_certificate" "auth" {
-  count = local.use_custom_domain ? 1 : 0
+  count    = local.use_custom_domain ? 1 : 0
+  provider = aws.us_east_1
 
   domain_name       = var.custom_auth_domain
   validation_method = "DNS"
@@ -108,19 +216,19 @@ resource "aws_route53_record" "auth_cert_validation" {
 }
 
 resource "aws_acm_certificate_validation" "auth" {
-  count = local.use_custom_domain ? 1 : 0
+  count    = local.use_custom_domain ? 1 : 0
+  provider = aws.us_east_1
 
   certificate_arn         = aws_acm_certificate.auth[0].arn
   validation_record_fqdns = [for r in aws_route53_record.auth_cert_validation : r.fqdn]
 }
 
 resource "aws_cognito_user_pool_domain" "this" {
-  domain       = local.use_custom_domain ? var.custom_auth_domain : "${var.project_name}-${var.environment}-${random_id.suffix.hex}"
-  user_pool_id = aws_cognito_user_pool.this.id
+  domain          = local.use_custom_domain ? var.custom_auth_domain : "${var.project_name}-${var.environment}-${random_id.suffix.hex}"
+  user_pool_id    = aws_cognito_user_pool.this.id
   certificate_arn = local.use_custom_domain ? aws_acm_certificate_validation.auth[0].certificate_arn : null
 }
 
-# Cognito custom domain is fronted by a CloudFront distribution Cognito manages
 resource "aws_route53_record" "auth_a" {
   count = local.use_custom_domain ? 1 : 0
 

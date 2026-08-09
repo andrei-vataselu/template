@@ -82,12 +82,20 @@ module "database" {
 module "cognito" {
   source = "../../modules/cognito"
 
-  project_name        = var.project_name
-  environment         = var.environment
-  require_mfa         = true
-  deletion_protection = var.environment == "prod"
-  custom_auth_domain  = local.auth_fqdn
-  zone_id             = var.domain_name != "" ? data.aws_route53_zone.main[0].zone_id : ""
+  providers = {
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  project_name             = var.project_name
+  environment              = var.environment
+  require_mfa              = false
+  allow_self_signup        = true
+  deletion_protection      = var.environment == "prod"
+  custom_auth_domain       = local.auth_fqdn
+  zone_id                  = var.domain_name != "" ? data.aws_route53_zone.main[0].zone_id : ""
+  ses_email_domain         = var.domain_name
+  from_email_address       = var.domain_name != "" ? "noreply@${var.domain_name}" : ""
+  reply_to_email_address   = var.alert_email
   callback_urls = concat(
     var.domain_name != "" ? ["https://${local.site_fqdn}/callback"] : [],
     var.domain_name != "" ? ["https://www.${var.domain_name}/callback"] : [],

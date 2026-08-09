@@ -14,6 +14,20 @@ function trim(value: string | undefined): string {
   return (value ?? "").trim();
 }
 
+/** Prefer HTTPS everywhere except local Vite / localhost previews. */
+export function ensureHttpsOrigin(): string {
+  const { protocol, host, hostname, origin } = window.location;
+  if (hostname === "localhost" || hostname === "127.0.0.1") {
+    return origin;
+  }
+  if (protocol !== "https:") {
+    const httpsUrl = `https://${host}${window.location.pathname}${window.location.search}${window.location.hash}`;
+    window.location.replace(httpsUrl);
+    return `https://${host}`;
+  }
+  return origin;
+}
+
 export function loadCognitoConfig(): CognitoPublicConfig | null {
   const region = trim(import.meta.env.VITE_COGNITO_REGION);
   const userPoolId = trim(import.meta.env.VITE_COGNITO_USER_POOL_ID);
@@ -24,7 +38,7 @@ export function loadCognitoConfig(): CognitoPublicConfig | null {
     return null;
   }
 
-  const origin = window.location.origin;
+  const origin = ensureHttpsOrigin();
 
   // Custom auth domain is a FQDN (contains a dot). Cognito prefix domains do not.
   const hostedUiBase = domainPrefix.includes(".")

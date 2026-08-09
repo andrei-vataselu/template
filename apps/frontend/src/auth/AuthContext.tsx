@@ -8,10 +8,8 @@ import {
   type ReactNode,
 } from "react";
 import {
-  beginLogin,
   getSession,
   isAuthConfigured,
-  logout as cognitoLogout,
   logoutLocal,
   readIdTokenClaims,
   refreshSession,
@@ -62,11 +60,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [hydrate]);
 
   const login = useCallback(async () => {
-    await beginLogin();
+    window.location.assign("/login");
   }, []);
 
   const logout = useCallback(() => {
-    cognitoLogout();
+    logoutLocal();
+    window.location.assign("/");
   }, []);
 
   const refresh = useCallback(async () => {
