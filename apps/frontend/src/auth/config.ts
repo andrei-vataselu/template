@@ -26,13 +26,18 @@ export function loadCognitoConfig(): CognitoPublicConfig | null {
 
   const origin = window.location.origin;
 
+  // Custom auth domain is a FQDN (contains a dot). Cognito prefix domains do not.
+  const hostedUiBase = domainPrefix.includes(".")
+    ? `https://${domainPrefix}`
+    : `https://${domainPrefix}.auth.${region}.amazoncognito.com`;
+
   return {
     region,
     userPoolId,
     clientId,
     domainPrefix,
     authority: `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`,
-    hostedUiBase: `https://${domainPrefix}.auth.${region}.amazoncognito.com`,
+    hostedUiBase,
     redirectUri: `${origin}/callback`,
     logoutUri: `${origin}/logout`,
     scopes: ["openid", "email", "profile"],

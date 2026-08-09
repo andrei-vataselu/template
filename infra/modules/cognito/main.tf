@@ -69,13 +69,84 @@ resource "aws_cognito_user_pool_client" "spa" {
   }
 }
 
-resource "aws_cognito_user_pool_domain" "this" {
-  domain       = "${var.project_name}-${var.environment}-${random_id.suffix.hex}"
-  user_pool_id = aws_cognito_user_pool.this.id
-}
-
 resource "random_id" "suffix" {
   byte_length = 3
+}
+
+locals {
+  use_custom_domain = var.custom_auth_domain != ""
+}
+
+# Cognito custom domains require an ACM cert in the *same region* as the user pool
+resource "aws_acm_certificate" "auth" {
+  count = local.use_custom_domain ? 1 : 0
+
+  domain_name       = var.custom_auth_domain
+  validation_method = "DNS"
+  tags              = var.tags
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_route53_record" "auth_cert_validation" {
+  for_each = local.use_custom_domain ? {
+    for dvo in aws_acm_certificate.auth[0].domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  } : {}
+
+  allow_overwrite = true
+  name            = each.value.name
+  records         = [each.value.record]
+  ttl             = 60
+  type            = each.value.type
+  zone_id         = var.zone_id
+}
+
+resource "aws_acm_certificate_validation" "auth" {
+  count = local.use_custom_domain ? 1 : 0
+
+  certificate_arn         = aws_acm_certificate.auth[0].arn
+  validation_record_fqdns = [for r in aws_route53_record.auth_cert_validation : r.fqdn]
+}
+
+resource "aws_cognito_user_pool_domain" "this" {
+  domain       = local.use_custom_domain ? var.custom_auth_domain : "${var.project_name}-${var.environment}-${random_id.suffix.hex}"
+  user_pool_id = aws_cognito_user_pool.this.id
+  certificate_arn = local.use_custom_domain ? aws_acm_certificate_validation.auth[0].certificate_arn : null
+}
+
+# Cognito custom domain is fronted by a CloudFront distribution Cognito manages
+resource "aws_route53_record" "auth_a" {
+  count = local.use_custom_domain ? 1 : 0
+
+  zone_id = var.zone_id
+  name    = var.custom_auth_domain
+  type    = "A"
+
+  alias {
+    name                   = aws_cognito_user_pool_domain.this.cloudfront_distribution
+    zone_id                = aws_cognito_user_pool_domain.this.cloudfront_distribution_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "auth_aaaa" {
+  count = local.use_custom_domain ? 1 : 0
+
+  zone_id = var.zone_id
+  name    = var.custom_auth_domain
+  type    = "AAAA"
+
+  alias {
+    name                   = aws_cognito_user_pool_domain.this.cloudfront_distribution
+    zone_id                = aws_cognito_user_pool_domain.this.cloudfront_distribution_zone_id
+    evaluate_target_health = false
+  }
 }
 
 resource "aws_cognito_user_group" "admins" {

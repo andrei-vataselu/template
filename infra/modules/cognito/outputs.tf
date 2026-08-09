@@ -11,5 +11,6 @@ output "spa_client_id" {
 }
 
 output "hosted_ui_domain" {
-  value = aws_cognito_user_pool_domain.this.domain
+  description = "Hosted UI hostname (custom FQDN) or Cognito prefix (no dots)"
+  value       = aws_cognito_user_pool_domain.this.domain
 }

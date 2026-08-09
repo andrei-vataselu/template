@@ -18,6 +18,16 @@ variable "deletion_protection" {
   type        = bool
   default     = false
 }
+variable "custom_auth_domain" {
+  description = "FQDN for Hosted UI (e.g. auth.dev.example.com). Empty uses a Cognito prefix domain."
+  type        = string
+  default     = ""
+}
+variable "zone_id" {
+  description = "Route 53 zone for custom auth domain ACM validation + alias. Required when custom_auth_domain is set."
+  type        = string
+  default     = ""
+}
 variable "tags" {
   type    = map(string)
   default = {}

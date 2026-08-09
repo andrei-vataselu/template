@@ -218,8 +218,11 @@ resource "aws_autoscaling_group" "app" {
   instance_refresh {
     strategy = "Rolling"
     preferences {
+      # Keep old instance until new one is past first-boot docker builds.
+      # ELB grace (30m) can mark instances "healthy" before /api/health works —
+      # warmup must exceed typical cold boot or refresh causes 502 downtime.
       min_healthy_percentage = 100
-      instance_warmup        = 300
+      instance_warmup        = 2100
     }
   }
 

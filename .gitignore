@@ -43,3 +43,6 @@ infra/backends/*.hcl
 **/dist/
 *.log
 .DS_Store
+
+# local SSM diagnostic dumps
+.ssm-*

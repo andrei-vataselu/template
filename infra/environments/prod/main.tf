@@ -31,6 +31,7 @@ locals {
   site_fqdn   = var.domain_name
   aliases     = var.domain_name != "" ? [var.domain_name, "www.${var.domain_name}"] : []
   origin_fqdn = var.domain_name != "" ? "origin.${var.domain_name}" : ""
+  auth_fqdn   = var.domain_name != "" ? "auth.${var.domain_name}" : ""
 
   common_tags = {
     Application = var.application_name
@@ -85,6 +86,8 @@ module "cognito" {
   environment         = var.environment
   require_mfa         = true
   deletion_protection = var.environment == "prod"
+  custom_auth_domain  = local.auth_fqdn
+  zone_id             = var.domain_name != "" ? data.aws_route53_zone.main[0].zone_id : ""
   callback_urls = concat(
     var.domain_name != "" ? ["https://${local.site_fqdn}/callback"] : [],
     var.domain_name != "" ? ["https://www.${var.domain_name}/callback"] : [],
