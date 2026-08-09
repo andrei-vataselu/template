@@ -574,19 +574,26 @@ resource "aws_acm_certificate" "origin" {
   tags = var.tags
 }
 
+# Static for_each keys (FQDNs) so destroy/plan works when ACM DVOs are unknown after refresh.
 resource "aws_route53_record" "origin_cert_validation" {
-  for_each = local.https_enabled ? {
-    for dvo in aws_acm_certificate.origin[0].domain_validation_options : dvo.domain_name => {
-      name   = dvo.resource_record_name
-      type   = dvo.resource_record_type
-      record = dvo.resource_record_value
-    }
-  } : {}
+  for_each = local.https_enabled ? toset(compact([
+    var.origin_fqdn,
+    var.origin_api_fqdn != "" ? var.origin_api_fqdn : null,
+  ])) : toset([])
 
-  zone_id         = var.zone_id
-  name            = each.value.name
-  type            = each.value.type
-  records         = [each.value.record]
+  zone_id = var.zone_id
+  name = one([
+    for dvo in aws_acm_certificate.origin[0].domain_validation_options : dvo.resource_record_name
+    if dvo.domain_name == each.key
+  ])
+  type = one([
+    for dvo in aws_acm_certificate.origin[0].domain_validation_options : dvo.resource_record_type
+    if dvo.domain_name == each.key
+  ])
+  records = [one([
+    for dvo in aws_acm_certificate.origin[0].domain_validation_options : dvo.resource_record_value
+    if dvo.domain_name == each.key
+  ])]
   ttl             = 300
   allow_overwrite = true
 }

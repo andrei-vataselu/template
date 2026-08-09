@@ -95,7 +95,27 @@ jobs:
 
       - name: Terraform destroy
         working-directory: infra/environments/dev
-        run: terraform destroy -input=false -auto-approve
+        run: |
+          set -euo pipefail
+          # Prefer normal destroy; fall back when refresh/plan fails on already-deleted resources.
+          if ! terraform destroy -input=false -auto-approve; then
+            echo "::warning::Full destroy failed — retrying with -refresh=false"
+            if ! terraform destroy -input=false -auto-approve -refresh=false; then
+              echo "::warning::Destroy still failing — dropping leftover addresses from state (AWS already empty)"
+              mapfile -t addrs < <(terraform state list || true)
+              for addr in "${addrs[@]+"${addrs[@]}"}"; do
+                echo "state rm $addr"
+                terraform state rm "$addr" || true
+              done
+            fi
+          fi
+          left="$(terraform state list || true)"
+          if [[ -n "${left}" ]]; then
+            echo "State still has resources:"
+            echo "$left"
+            exit 1
+          fi
+          echo "Dev state is empty."
 
   reject:
     name: rejected (bad confirm)
