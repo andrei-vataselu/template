@@ -1,0 +1,69 @@
+name: AWS cost audit
+
+# Lists remaining billable-ish resources after stack teardown.
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-west-1
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Audit remaining resources
+        run: |
+          set -euo pipefail
+          echo "=== EC2 (non-terminated) ==="
+          aws ec2 describe-instances --filters Name=instance-state-name,Values=pending,running,stopping,stopped \
+            --query 'Reservations[].Instances[].[InstanceId,State.Name,Tags[?Key==`Name`].Value|[0]]' --output table || true
+          echo "=== NAT ==="
+          aws ec2 describe-nat-gateways --filter Name=state,Values=pending,available,deleting \
+            --query 'NatGateways[].[NatGatewayId,State]' --output table || true
+          echo "=== ALB ==="
+          aws elbv2 describe-load-balancers --query 'LoadBalancers[].[LoadBalancerName,State.Code]' --output table || true
+          echo "=== RDS ==="
+          aws rds describe-db-instances --query 'DBInstances[].[DBInstanceIdentifier,DBInstanceStatus]' --output table || true
+          echo "=== ASG ==="
+          aws autoscaling describe-auto-scaling-groups --query 'AutoScalingGroups[].[AutoScalingGroupName,DesiredCapacity]' --output table || true
+          echo "=== CloudFront ==="
+          aws cloudfront list-distributions --query 'DistributionList.Items[].[Id,DomainName,Enabled]' --output table || true
+          echo "=== Cognito ==="
+          aws cognito-idp list-user-pools --max-results 20 --query 'UserPools[].[Name,Id]' --output table || true
+          echo "=== Lambda ==="
+          aws lambda list-functions --query 'Functions[].FunctionName' --output text || true
+          echo "=== Non-default VPC ==="
+          aws ec2 describe-vpcs --filters Name=isDefault,Values=false --query 'Vpcs[].[VpcId,Tags[?Key==`Name`].Value|[0]]' --output table || true
+          echo "=== EIPs ==="
+          aws ec2 describe-addresses --query 'Addresses[].[AllocationId,PublicIp]' --output table || true
+          echo "=== Available EBS ==="
+          aws ec2 describe-volumes --filters Name=status,Values=available --query 'Volumes[].[VolumeId,Size]' --output table || true
+          echo "=== Snapshots (self) ==="
+          aws ec2 describe-snapshots --owner-ids self --query 'Snapshots[].[SnapshotId,VolumeSize,StartTime]' --output table || true
+          echo "=== ACM eu-west-1 ==="
+          aws acm list-certificates --query 'CertificateSummaryList[].[DomainName,Status]' --output table || true
+          echo "=== ACM us-east-1 ==="
+          aws acm list-certificates --region us-east-1 --query 'CertificateSummaryList[].[DomainName,Status]' --output table || true
+          echo "=== Secrets ==="
+          aws secretsmanager list-secrets --query 'SecretList[].Name' --output text || true
+          echo "=== Route53 zones ==="
+          aws route53 list-hosted-zones --query 'HostedZones[].[Name,Id,ResourceRecordSetCount]' --output table || true
+          echo "=== CloudTrail ==="
+          aws cloudtrail describe-trails --query 'trailList[].[Name,S3BucketName]' --output table || true
+          echo "=== S3 buckets ==="
+          aws s3api list-buckets --query 'Buckets[].Name' --output text || true
+          echo "=== Dev TF state objects ==="
+          aws s3 ls "s3://popo-tfstate-${{ vars.AWS_ACCOUNT_ID }}/dev/" || true
+          echo "=== CW log groups with data ==="
+          aws logs describe-log-groups --query 'logGroups[?storedBytes>`0`].[logGroupName,storedBytes]' --output table || true
+          echo "AUDIT_DONE"
