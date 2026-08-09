@@ -33,12 +33,19 @@ variable "alert_email" {
 variable "monthly_budget_usd" {
   description = "Hard internal monthly budget (alerts only — not a real-time cut-off)"
   type        = number
-  default     = 25
+  default     = 65
 }
 
 variable "instance_type" {
-  type    = string
-  default = "t4g.micro"
+  description = "Backend (API) instance type"
+  type        = string
+  default     = "t4g.micro"
+}
+
+variable "web_instance_type" {
+  description = "Frontend instance type (static nginx — nano keeps the split near cost-neutral)"
+  type        = string
+  default     = "t4g.nano"
 }
 
 variable "db_instance_class" {
@@ -53,6 +60,12 @@ variable "root_volume_gb" {
 
 variable "app_git_url" {
   description = "Git URL with apps/ + deploy/ for full Docker stack on EC2"
+  type        = string
+  default     = ""
+}
+
+variable "app_git_sha" {
+  description = "Optional commit SHA seed for SSM /{project}/{env}/app-git-sha (empty = unpinned until deploy writes github.sha)"
   type        = string
   default     = ""
 }
@@ -99,6 +112,12 @@ variable "allowed_ip_cidrs" {
   default     = []
 }
 
+variable "allowed_ipv6_cidrs" {
+  description = "IPv6 CIDRs allowed through Cognito Hosted UI WAF. Required for auth.* when browsers use IPv6 (Cognito custom domain is dual-stack)."
+  type        = list(string)
+  default     = []
+}
+
 variable "asg_min_size" {
   type    = number
   default = 1
@@ -114,4 +133,26 @@ variable "asg_max_size" {
   description = "Hard cap. Keep >= desired+1 so rolling deploys can launch a replacement first."
   type        = number
   default     = 2
+}
+
+variable "web_asg_min_size" {
+  type    = number
+  default = 1
+}
+
+variable "web_asg_desired_capacity" {
+  type    = number
+  default = 1
+}
+
+variable "web_asg_max_size" {
+  description = "Hard cap for frontend instances. Keep >= desired+1 for rolling deploys."
+  type        = number
+  default     = 2
+}
+
+variable "ami_id" {
+  description = "Optional AMI ID pin for ASG launch templates. Empty = latest AL2023 ARM64 from SSM."
+  type        = string
+  default     = ""
 }

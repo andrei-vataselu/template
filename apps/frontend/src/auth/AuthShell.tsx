@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { beginAuth, type CognitoAuthScreen } from "./cognitoAuth";
+import { beginAuth, isInviteOnly, type CognitoAuthScreen } from "./cognitoAuth";
 
 type Props = {
   screen: CognitoAuthScreen;
@@ -18,6 +18,7 @@ export function AuthShell({ screen }: Props) {
 
   const label =
     screen === "signup" ? "Create account" : screen === "forgotPassword" ? "Reset password" : "Sign in";
+  const inviteOnly = isInviteOnly();
 
   return (
     <div className="page auth-page">
@@ -51,7 +52,7 @@ export function AuthShell({ screen }: Props) {
                 Sign in instead
               </button>
             ) : null}
-            {screen !== "signup" ? (
+            {!inviteOnly && screen !== "signup" ? (
               <button type="button" className="linkish" onClick={() => void beginAuth("signup")}>
                 Create an account
               </button>

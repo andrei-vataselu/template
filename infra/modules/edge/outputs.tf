@@ -17,3 +17,16 @@ output "waf_acl_arn" {
 output "site_url" {
   value = length(var.aliases) > 0 ? "https://${var.aliases[0]}" : "https://${aws_cloudfront_distribution.this.domain_name}"
 }
+
+output "api_distribution_id" {
+  value = length(var.api_aliases) > 0 ? aws_cloudfront_distribution.api[0].id : ""
+}
+
+output "api_distribution_arn" {
+  value = length(var.api_aliases) > 0 ? aws_cloudfront_distribution.api[0].arn : ""
+}
+
+output "api_url" {
+  description = "Public API base URL (empty when no API alias is configured)"
+  value       = length(var.api_aliases) > 0 ? "https://${var.api_aliases[0]}" : ""
+}

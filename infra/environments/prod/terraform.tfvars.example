@@ -1,13 +1,16 @@
 # PROD — same architecture as DEV; only tiers differ.
-# Expected ~$110+/mo (see infra/COST_GATE.txt). DO NOT apply until needed.
+# Expected ~$157–172/mo with NAT + split FE/BE (see COST_PREDICTABILITY.md). DO NOT apply until needed.
 aws_region               = "eu-west-1"
 project_name             = "popo"
 application_name         = "template"
 environment              = "prod"
 cost_center              = "cc-prod-core"
 alert_email              = "YOU@example.com"
-monthly_budget_usd       = 120
-instance_type            = "t4g.small"
+monthly_budget_usd       = 175
+instance_type            = "t4g.small" # backend (API)
+web_instance_type        = "t4g.micro" # frontend (static nginx)
+# Optional: pin AMI (empty = latest AL2023 ARM64 from SSM). Example: ami_id = "ami-0abc..."
+ami_id                   = ""
 db_instance_class        = "db.t4g.small"
 root_volume_gb           = 40
 db_storage_gb            = 40
@@ -17,9 +20,16 @@ db_deletion_protection   = true
 db_skip_final_snapshot   = false
 vpc_cidr                 = "10.30.0.0/16"
 app_git_url              = "https://github.com/OWNER/REPO.git"
+# Optional seed for SSM /popo/<env>/app-git-sha (empty = "unpinned").
+# Deploy workflows overwrite this parameter with github.sha before ASG rolls —
+# leave empty in day-to-day tfvars; set only to seed a known pin on first apply.
+# app_git_sha              = ""
 domain_name              = "your-domain.tld"
 # Empty = public. Optionally lock during first soak: ["YOUR_IP/32"]
 allowed_ip_cidrs         = []
 asg_min_size             = 1
 asg_desired_capacity     = 1
 asg_max_size             = 3
+web_asg_min_size         = 1
+web_asg_desired_capacity = 1
+web_asg_max_size         = 2

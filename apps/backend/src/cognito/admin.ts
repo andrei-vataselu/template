@@ -3,6 +3,7 @@ import {
   AdminDeleteUserCommand,
   AdminDisableUserCommand,
   AdminEnableUserCommand,
+  AdminGetUserCommand,
   CognitoIdentityProviderClient,
   GetUserCommand,
   ListUsersCommand,
@@ -10,6 +11,12 @@ import {
   UsernameExistsException,
 } from "@aws-sdk/client-cognito-identity-provider";
 import { config } from "../config.js";
+
+export type CognitoAccountGate = "ok" | "disabled" | "unconfirmed" | "skipped";
+
+/** Short TTL cache so AdminGetUser is not called on every API request. */
+const STATUS_CACHE_TTL_MS = 30_000;
+const statusCache = new Map<string, { gate: CognitoAccountGate; expiresAt: number }>();
 
 export type CognitoProfile = {
   username: string;
@@ -156,5 +163,64 @@ export async function adminDeleteUser(username: string): Promise<void> {
   } catch (err) {
     if (err instanceof UserNotFoundException) return;
     throw err;
+  }
+}
+
+/**
+ * Reject Cognito-disabled / unconfirmed users even if a JWT is still valid.
+ * Skips (fail-open) when Cognito admin APIs are unavailable or AccessDenied —
+ * local directory `disabled` status remains the primary gate.
+ */
+export async function assertCognitoAccountActive(opts: {
+  username?: string;
+  cognitoSub: string;
+}): Promise<CognitoAccountGate> {
+  if (!config.cognito.configured || !config.cognito.userPoolId) {
+    return "skipped";
+  }
+
+  const cacheKey = opts.username || opts.cognitoSub;
+  const cached = statusCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.gate;
+  }
+
+  try {
+    const username = opts.username || (await adminUsernameBySub(opts.cognitoSub));
+    const res = await getClient().send(
+      new AdminGetUserCommand({
+        UserPoolId: config.cognito.userPoolId,
+        Username: username,
+      }),
+    );
+
+    const enabled = res.Enabled !== false;
+    const status = (res.UserStatus ?? "").toUpperCase();
+    const unconfirmed = status === "UNCONFIRMED" || status === "ARCHIVED";
+
+    let gate: CognitoAccountGate = "ok";
+    if (!enabled) gate = "disabled";
+    else if (unconfirmed) gate = "unconfirmed";
+
+    statusCache.set(cacheKey, { gate, expiresAt: Date.now() + STATUS_CACHE_TTL_MS });
+    return gate;
+  } catch (err) {
+    const name = (err as { name?: string }).name ?? "";
+    // Missing IAM or transient — do not block requests; local RBAC still applies.
+    if (
+      name === "AccessDeniedException" ||
+      name === "NotAuthorizedException" ||
+      name === "UnrecognizedClientException"
+    ) {
+      return "skipped";
+    }
+    if (err instanceof UserNotFoundException) {
+      return "disabled";
+    }
+    const maybe = err as { code?: string; status?: number };
+    if (maybe.code === "not_found") return "disabled";
+    // Unexpected errors: skip rather than 5xx every authenticated call
+    console.warn("[auth] AdminGetUser status check failed; skipping", name || err);
+    return "skipped";
   }
 }

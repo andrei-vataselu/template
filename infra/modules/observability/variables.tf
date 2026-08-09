@@ -11,13 +11,29 @@ variable "enable_anomaly_detection" {
   default     = false
 }
 variable "asg_name" { type = string }
+variable "enable_web_alarms" {
+  description = "Create frontend ASG/TG alarms (must be known at plan time — do not derive from ARN suffixes)"
+  type        = bool
+  default     = true
+}
+
+variable "web_asg_name" {
+  description = "Frontend ASG name"
+  type        = string
+  default     = ""
+}
 variable "alb_arn_suffix" {
   description = "ALB ARN suffix for CloudWatch dimensions (aws_lb.xxx.arn_suffix)"
   type        = string
 }
 variable "target_group_arn_suffix" {
-  description = "Target group ARN suffix for CloudWatch dimensions"
+  description = "API target group ARN suffix for CloudWatch dimensions"
   type        = string
+}
+variable "web_target_group_arn_suffix" {
+  description = "Frontend target group ARN suffix (empty = no web unhealthy-host alarm)"
+  type        = string
+  default     = ""
 }
 variable "db_instance_id" { type = string }
 variable "tags" {

@@ -1,7 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-# Swap so npm/docker builds on t4g.micro don't OOM / get ASG-replaced mid-boot
+# Role: "api" (backend + gateway) or "web" (frontend + gateway)
+SERVICE_ROLE="${service_role}"
+
+# Swap so npm/docker builds on small instances don't OOM / get ASG-replaced mid-boot
 if [ ! -f /swapfile ]; then
   fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
   chmod 600 /swapfile
@@ -11,13 +14,14 @@ if [ ! -f /swapfile ]; then
 fi
 
 for attempt in 1 2 3 4 5; do
-  if dnf update -y && dnf install -y docker git unzip; then
+  if dnf update -y && dnf install -y docker git unzip cronie; then
     break
   fi
   echo "dnf attempt $attempt failed; retrying in 15s" >&2
   sleep 15
 done
 command -v docker >/dev/null 2>&1 || { echo "docker install failed" >&2; exit 1; }
+systemctl enable --now crond || systemctl enable --now cron || true
 
 # Bound container log growth (disk-full is an outage risk on a fixed disk)
 mkdir -p /etc/docker
@@ -39,8 +43,13 @@ if dnf install -y docker-compose-plugin; then
   true
 else
   mkdir -p /usr/local/lib/docker/cli-plugins
-  curl -fsSL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-aarch64" \
-    -o /usr/local/lib/docker/cli-plugins/docker-compose
+  COMPOSE_VER=v2.32.4
+  COMPOSE_URL="https://github.com/docker/compose/releases/download/$${COMPOSE_VER}/docker-compose-linux-aarch64"
+  # sha256 from GitHub release assets (linux-aarch64) — fail closed if mismatch
+  COMPOSE_SHA256="0c4591cf3b1ed039adcd803dbbeddf757375fc08c11245b0154135f838495a2f"
+  curl -fsSL "$COMPOSE_URL" -o /tmp/docker-compose
+  echo "$${COMPOSE_SHA256}  /tmp/docker-compose" | sha256sum -c -
+  mv /tmp/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
   chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
   mkdir -p /usr/libexec/docker/cli-plugins
   ln -sfn /usr/local/lib/docker/cli-plugins/docker-compose /usr/libexec/docker/cli-plugins/docker-compose
@@ -56,47 +65,132 @@ command -v aws >/dev/null 2>&1 || dnf install -y awscli
 command -v python3 >/dev/null 2>&1 || dnf install -y python3
 IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
 AWS_REGION=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
-ORIGIN_HEADER_VALUE=$(aws secretsmanager get-secret-value \
+ORIGIN_SECRET_RAW=$(aws secretsmanager get-secret-value \
   --secret-id "${origin_secret_arn}" \
   --region "$AWS_REGION" \
   --query SecretString --output text)
+# JSON {current,previous} from rotator; plain string still supported
+eval "$(printf '%s' "$ORIGIN_SECRET_RAW" | python3 -c '
+import json,sys,shlex
+raw=sys.stdin.read().strip()
+try:
+    o=json.loads(raw)
+    cur=o.get("current") or ""
+    prev=o.get("previous") or cur
+except Exception:
+    cur=prev=raw
+# Never export empty prev (nginx would treat empty header as match)
+if not prev:
+    prev="__none__"
+print("ORIGIN_HEADER_VALUE="+shlex.quote(cur))
+print("ORIGIN_HEADER_VALUE_PREV="+shlex.quote(prev))
+')"
 
-# RDS managed master secret is often ONLY {username,password} — host/port/db come from Terraform.
-DB_SECRET_JSON=$(aws secretsmanager get-secret-value \
-  --secret-id "${db_secret_arn}" \
+%{ if service_role == "api" ~}
+# Runtime DB user `app` only — role provisioning is done by the VPC ensure-app Lambda.
+APP_SECRET_JSON=$(aws secretsmanager get-secret-value \
+  --secret-id "${db_app_secret_arn}" \
   --region "$AWS_REGION" \
   --query SecretString --output text)
-DB_USER=$(printf '%s' "$DB_SECRET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["username"])')
-DB_PASS=$(printf '%s' "$DB_SECRET_JSON" | python3 -c 'import json,sys,urllib.parse; print(urllib.parse.quote(json.load(sys.stdin)["password"], safe=""))')
 DB_HOST="${db_host}"
 DB_PORT="${db_port}"
 DB_NAME="${db_name}"
+DB_USER=$(printf '%s' "$APP_SECRET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["username"])')
+DB_PASS=$(printf '%s' "$APP_SECRET_JSON" | python3 -c 'import json,sys,urllib.parse; print(urllib.parse.quote(json.load(sys.stdin)["password"], safe=""))')
 DATABASE_URL="postgres://$${DB_USER}:$${DB_PASS}@$${DB_HOST}:$${DB_PORT}/$${DB_NAME}?uselibpqcompat=true&sslmode=require"
+%{ endif ~}
 
 # AWS runtime: use RDS only (compose `db` service is local-profile)
+%{ if service_role == "api" ~}
 cat >"$APP_DIR/.env" <<EOF
 APP_ENV=${environment}
 APP_NAME=template
 ORIGIN_HEADER_VALUE=$ORIGIN_HEADER_VALUE
+ORIGIN_HEADER_VALUE_PREV=$ORIGIN_HEADER_VALUE_PREV
 SKIP_ORIGIN_CHECK=0
 AWS_REGION=$AWS_REGION
+COMPOSE_PROFILES=api
+GATEWAY_MODE=api
 COGNITO_REGION=${cognito_region}
 COGNITO_USER_POOL_ID=${cognito_user_pool_id}
 COGNITO_CLIENT_ID=${cognito_spa_client_id}
 COGNITO_DOMAIN=${cognito_hosted_ui_domain}
+DATABASE_URL=$DATABASE_URL
+DATABASE_SSL=1
+DATABASE_SSL_STRICT=1
+NODE_EXTRA_CA_CERTS=/certs/rds-global-bundle.pem
+TRUST_PROXY_HOPS=3
+ALLOWED_ORIGINS=${allowed_origins}
+BOOTSTRAP_ADMIN_EMAILS=${bootstrap_admin_emails}
+INVITE_ONLY=${invite_only}
+EOF
+%{ else ~}
+cat >"$APP_DIR/.env" <<EOF
+APP_ENV=${environment}
+APP_NAME=template
+ORIGIN_HEADER_VALUE=$ORIGIN_HEADER_VALUE
+ORIGIN_HEADER_VALUE_PREV=$ORIGIN_HEADER_VALUE_PREV
+SKIP_ORIGIN_CHECK=0
+AWS_REGION=$AWS_REGION
+COMPOSE_PROFILES=web
+GATEWAY_MODE=web
 VITE_COGNITO_REGION=${cognito_region}
 VITE_COGNITO_USER_POOL_ID=${cognito_user_pool_id}
 VITE_COGNITO_CLIENT_ID=${cognito_spa_client_id}
 VITE_COGNITO_DOMAIN=${cognito_hosted_ui_domain}
-DATABASE_URL=$DATABASE_URL
-DATABASE_SSL=1
-COMPOSE_PROFILES=
-BOOTSTRAP_ADMIN_EMAILS=${bootstrap_admin_emails}
+VITE_API_BASE_URL=${api_base_url}
+VITE_INVITE_ONLY=${invite_only}
 EOF
+%{ endif ~}
 chmod 600 "$APP_DIR/.env"
 
+%{ if service_role == "api" ~}
+# RDS CA for API TLS verify (role `app` is provisioned by Terraform Lambda, not here)
+mkdir -p "$APP_DIR/certs"
+curl -fsSL "https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem" \
+  -o "$APP_DIR/certs/rds-global-bundle.pem"
+%{ endif ~}
+
 %{ if app_git_url != "" ~}
-git clone --depth 1 "${app_git_url}" "$APP_DIR/repo"
+# Fail closed on shell-meta in git URL (REPORT H7)
+case "${app_git_url}" in
+  *[\`\$\!\|\;\&\<\>\(\)\{\}\[\]\\\'\"]*)
+    echo "app_git_url contains unsafe characters" >&2
+    exit 1
+    ;;
+  https://github.com/*|https://gitlab.com/*|git@github.com:*)
+    ;;
+  *)
+    echo "app_git_url must be https://github.com|gitlab.com or git@github.com" >&2
+    exit 1
+    ;;
+esac
+
+# Pin deploy SHA from SSM (H3). Deploy workflows write github.sha before ASG rolls.
+# "unpinned"/empty/None => shallow clone of default branch tip.
+APP_GIT_SHA=$(aws ssm get-parameter \
+  --name "${app_git_sha_param}" \
+  --region "$AWS_REGION" \
+  --query 'Parameter.Value' --output text 2>/dev/null || echo "unpinned")
+APP_GIT_SHA=$(printf '%s' "$APP_GIT_SHA" | tr -d '[:space:]')
+case "$APP_GIT_SHA" in
+  ""|unpinned|None|null|NULL)
+    git clone --depth 1 "${app_git_url}" "$APP_DIR/repo"
+    ;;
+  *)
+    # Full or abbreviated hex SHA only (reject shell metacharacters)
+    if ! printf '%s' "$APP_GIT_SHA" | grep -Eq '^[0-9a-fA-F]{7,40}$'; then
+      echo "Invalid app-git-sha from SSM: $APP_GIT_SHA" >&2
+      exit 1
+    fi
+    mkdir -p "$APP_DIR/repo"
+    git -C "$APP_DIR/repo" init
+    git -C "$APP_DIR/repo" remote add origin "${app_git_url}"
+    # Shallow fetch of an arbitrary SHA (plain --depth 1 clone cannot pin arbitrary commits)
+    git -C "$APP_DIR/repo" fetch --depth 1 origin "$APP_GIT_SHA"
+    git -C "$APP_DIR/repo" checkout --force FETCH_HEAD
+    ;;
+esac
 # Support either repo root or nested layout
 if [ -f "$APP_DIR/repo/deploy/docker-compose.yml" ]; then
   ln -sfn "$APP_DIR/repo/deploy" "$APP_DIR/deploy"
@@ -108,11 +202,206 @@ else
   exit 1
 fi
 WORK_DIR="$APP_DIR/deploy"
+
+%{ if service_role == "api" ~}
+mkdir -p "$WORK_DIR/certs"
+cp -f "$APP_DIR/certs/rds-global-bundle.pem" "$WORK_DIR/certs/rds-global-bundle.pem"
+%{ endif ~}
+
+# Prefer repo hardened compose + GATEWAY_MODE templates (REPORT H4).
+# Overlay only when the tip predates profiles/healthz.
+USE_REPO_DEPLOY=0
+if [ -f "$WORK_DIR/gateway/nginx.api.conf.template" ] \
+  && [ -f "$WORK_DIR/gateway/nginx.web.conf.template" ] \
+  && grep -q 'NGINX_ENVSUBST_TEMPLATE_DIR\|GATEWAY_MODE\|profiles:' "$WORK_DIR/docker-compose.yml" \
+  && grep -q 'healthz' "$WORK_DIR/gateway/nginx.api.conf.template" \
+  && grep -q 'healthz' "$WORK_DIR/gateway/nginx.web.conf.template"; then
+  USE_REPO_DEPLOY=1
+fi
+
+if [ "$USE_REPO_DEPLOY" = "1" ]; then
+  echo "Using repo deploy/ (hardened compose + gateway templates)"
+  # Ensure gateway Dockerfile knows about mode templates
+  if [ ! -f "$WORK_DIR/gateway/Dockerfile" ] || ! grep -q 'templates-api' "$WORK_DIR/gateway/Dockerfile"; then
+    cat >"$WORK_DIR/gateway/Dockerfile" <<'DF'
+FROM nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
+COPY nginx.api.conf.template /etc/nginx/templates-api/default.conf.template
+COPY nginx.web.conf.template /etc/nginx/templates-web/default.conf.template
+COPY nginx.all.conf.template /etc/nginx/templates-all/default.conf.template
+ENV ORIGIN_HEADER_VALUE=changeme
+ENV ORIGIN_HEADER_VALUE_PREV=__none__
+ENV SKIP_ORIGIN_CHECK=0
+ENV NGINX_ENVSUBST_TEMPLATE_DIR=/etc/nginx/templates-all
+EXPOSE 8080
+DF
+  fi
+  # Tip compose must pass PREV into the gateway for dual-period rotate
+  if ! grep -q 'ORIGIN_HEADER_VALUE_PREV' "$WORK_DIR/docker-compose.yml"; then
+    echo "Injecting ORIGIN_HEADER_VALUE_PREV into compose gateway env" >&2
+    sed -i '/ORIGIN_HEADER_VALUE:/a\      ORIGIN_HEADER_VALUE_PREV: $${ORIGIN_HEADER_VALUE_PREV:-__none__}' \
+      "$WORK_DIR/docker-compose.yml"
+  fi
+else
+  echo "Repo tip lacks hardened gateway — applying fallback overlay" >&2
+  mkdir -p "$WORK_DIR/gateway"
+%{ if service_role == "api" ~}
+  cat >"$WORK_DIR/docker-compose.yml" <<'COMPOSE'
+services:
+  gateway:
+    build: ./gateway
+    ports: ["80:8080"]
+    environment:
+      ORIGIN_HEADER_VALUE: $${ORIGIN_HEADER_VALUE}
+      ORIGIN_HEADER_VALUE_PREV: $${ORIGIN_HEADER_VALUE_PREV}
+      SKIP_ORIGIN_CHECK: "0"
+      NGINX_ENVSUBST_TEMPLATE_DIR: /etc/nginx/templates-api
+    depends_on: [api]
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    mem_limit: 128m
+    pids_limit: 100
+  api:
+    build: ../apps/backend
+    environment:
+      PORT: "3000"
+      APP_ENV: $${APP_ENV}
+      APP_NAME: $${APP_NAME}
+      ALLOWED_ORIGINS: $${ALLOWED_ORIGINS}
+      NODE_ENV: production
+      DATABASE_URL: $${DATABASE_URL}
+      DATABASE_SSL: $${DATABASE_SSL}
+      DATABASE_SSL_STRICT: $${DATABASE_SSL_STRICT}
+      NODE_EXTRA_CA_CERTS: $${NODE_EXTRA_CA_CERTS}
+      TRUST_PROXY_HOPS: $${TRUST_PROXY_HOPS}
+      COGNITO_REGION: $${COGNITO_REGION}
+      COGNITO_USER_POOL_ID: $${COGNITO_USER_POOL_ID}
+      COGNITO_CLIENT_ID: $${COGNITO_CLIENT_ID}
+      BOOTSTRAP_ADMIN_EMAILS: $${BOOTSTRAP_ADMIN_EMAILS}
+      INVITE_ONLY: $${INVITE_ONLY}
+      AWS_REGION: $${AWS_REGION}
+    volumes: ["./certs:/certs:ro"]
+    expose: ["3000"]
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    read_only: true
+    tmpfs: ["/tmp"]
+    mem_limit: 384m
+    pids_limit: 200
+networks:
+  default:
+    name: template_net
+COMPOSE
+  cat >"$WORK_DIR/gateway/nginx.conf.template" <<'NGX'
+limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+server {
+  listen 8080;
+  server_tokens off;
+  set $origin_ok 0;
+  if ($http_x_origin_verify = "$${ORIGIN_HEADER_VALUE}") { set $origin_ok 1; }
+  if ($http_x_origin_verify = "$${ORIGIN_HEADER_VALUE_PREV}") { set $origin_ok 1; }
+  if ($request_uri = "/api/health") { set $origin_ok 1; }
+  if ($request_uri = "/healthz") { set $origin_ok 1; }
+  if ($origin_ok = 0) { return 403; }
+  location = /healthz {
+    default_type application/json;
+    return 200 '{"ok":true,"service":"gateway-api"}';
+  }
+  location /api/ {
+    limit_req zone=api burst=20 nodelay;
+    proxy_pass http://api:3000/api/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+  location / { return 404; }
+}
+NGX
+%{ else ~}
+  cat >"$WORK_DIR/docker-compose.yml" <<'COMPOSE'
+services:
+  gateway:
+    build: ./gateway
+    ports: ["80:8080"]
+    environment:
+      ORIGIN_HEADER_VALUE: $${ORIGIN_HEADER_VALUE}
+      ORIGIN_HEADER_VALUE_PREV: $${ORIGIN_HEADER_VALUE_PREV}
+      SKIP_ORIGIN_CHECK: "0"
+      NGINX_ENVSUBST_TEMPLATE_DIR: /etc/nginx/templates-web
+    depends_on: [web]
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    mem_limit: 128m
+    pids_limit: 100
+  web:
+    build:
+      context: ../apps/frontend
+      args:
+        VITE_COGNITO_REGION: $${VITE_COGNITO_REGION}
+        VITE_COGNITO_USER_POOL_ID: $${VITE_COGNITO_USER_POOL_ID}
+        VITE_COGNITO_CLIENT_ID: $${VITE_COGNITO_CLIENT_ID}
+        VITE_COGNITO_DOMAIN: $${VITE_COGNITO_DOMAIN}
+        VITE_API_BASE_URL: $${VITE_API_BASE_URL}
+        VITE_INVITE_ONLY: $${VITE_INVITE_ONLY}
+    expose: ["8080"]
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    mem_limit: 128m
+    pids_limit: 100
+networks:
+  default:
+    name: template_net
+COMPOSE
+  cat >"$WORK_DIR/gateway/nginx.conf.template" <<'NGX'
+limit_req_zone $binary_remote_addr zone=general:10m rate=20r/s;
+server {
+  listen 8080;
+  server_tokens off;
+  set $origin_ok 0;
+  if ($http_x_origin_verify = "$${ORIGIN_HEADER_VALUE}") { set $origin_ok 1; }
+  if ($http_x_origin_verify = "$${ORIGIN_HEADER_VALUE_PREV}") { set $origin_ok 1; }
+  if ($request_uri = "/healthz") { set $origin_ok 1; }
+  if ($origin_ok = 0) { return 403; }
+  location = /healthz {
+    default_type application/json;
+    return 200 '{"ok":true,"service":"gateway-web"}';
+  }
+  location / {
+    limit_req zone=general burst=40 nodelay;
+    proxy_pass http://web:8080/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+}
+NGX
+%{ endif ~}
+  # Install the same conf into every template dir compose might select
+  cat >"$WORK_DIR/gateway/Dockerfile" <<'DF'
+FROM nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY nginx.conf.template /etc/nginx/templates-api/default.conf.template
+COPY nginx.conf.template /etc/nginx/templates-web/default.conf.template
+COPY nginx.conf.template /etc/nginx/templates-all/default.conf.template
+ENV ORIGIN_HEADER_VALUE=changeme
+ENV ORIGIN_HEADER_VALUE_PREV=__none__
+ENV SKIP_ORIGIN_CHECK=0
+EXPOSE 8080
+DF
+fi
 %{ else ~}
 # Bootstrap stack so the ALB has a healthy target before git is configured
 mkdir -p "$APP_DIR/deploy/gateway" "$APP_DIR/apps/backend" "$APP_DIR/apps/frontend/dist"
 WORK_DIR="$APP_DIR/deploy"
 
+%{ if service_role == "api" ~}
 cat >"$WORK_DIR/docker-compose.yml" <<'COMPOSE'
 services:
   gateway:
@@ -121,10 +410,10 @@ services:
     environment:
       ORIGIN_HEADER_VALUE: $${ORIGIN_HEADER_VALUE}
       SKIP_ORIGIN_CHECK: "0"
-    depends_on: [api, web]
+    depends_on: [api]
     restart: unless-stopped
   api:
-    image: node:20-alpine
+    image: node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
     working_dir: /app
     command: ["node", "server.mjs"]
     volumes: ["../apps/backend/server.mjs:/app/server.mjs:ro"]
@@ -134,44 +423,32 @@ services:
       APP_NAME: template
     expose: ["3000"]
     restart: unless-stopped
-  web:
-    image: nginxinc/nginx-unprivileged:1.27-alpine
-    volumes: ["../apps/frontend/dist:/usr/share/nginx/html:ro"]
-    expose: ["8080"]
-    restart: unless-stopped
 COMPOSE
-
-cat >"$WORK_DIR/gateway/Dockerfile" <<'DF'
-FROM nginxinc/nginx-unprivileged:1.27-alpine
-COPY nginx.conf.template /etc/nginx/templates/default.conf.template
-ENV ORIGIN_HEADER_VALUE=changeme
-ENV SKIP_ORIGIN_CHECK=0
-EXPOSE 8080
-DF
 
 cat >"$WORK_DIR/gateway/nginx.conf.template" <<'NGX'
 server {
   listen 8080;
   server_tokens off;
 
-  # ALB health checks have no origin secret — keep this path open
-  location = /api/health {
-    proxy_pass http://api:3000/api/health;
-  }
-
   set $origin_ok 0;
   if ($http_x_origin_verify = "$${ORIGIN_HEADER_VALUE}") { set $origin_ok 1; }
+  if ($http_x_origin_verify = "$${ORIGIN_HEADER_VALUE_PREV}") { set $origin_ok 1; }
+  # ALB health checks have no origin secret — keep these paths open
+  if ($request_uri = "/api/health") { set $origin_ok 1; }
+  if ($request_uri = "/healthz") { set $origin_ok 1; }
   if ($origin_ok = 0) { return 403; }
 
+  location = /healthz {
+    default_type application/json;
+    return 200 '{"ok":true,"service":"gateway-api"}';
+  }
   location /api/ {
     proxy_pass http://api:3000/api/;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
   }
   location / {
-    proxy_pass http://web:8080/;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
+    return 404;
   }
 }
 NGX
@@ -200,6 +477,47 @@ http.createServer((req, res) => {
   send(res, 404, { ok: false, error: "Not found" });
 }).listen(port, "0.0.0.0");
 JS
+%{ else ~}
+cat >"$WORK_DIR/docker-compose.yml" <<'COMPOSE'
+services:
+  gateway:
+    build: ./gateway
+    ports: ["80:8080"]
+    environment:
+      ORIGIN_HEADER_VALUE: $${ORIGIN_HEADER_VALUE}
+      SKIP_ORIGIN_CHECK: "0"
+    depends_on: [web]
+    restart: unless-stopped
+  web:
+    image: nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
+    volumes: ["../apps/frontend/dist:/usr/share/nginx/html:ro"]
+    expose: ["8080"]
+    restart: unless-stopped
+COMPOSE
+
+cat >"$WORK_DIR/gateway/nginx.conf.template" <<'NGX'
+server {
+  listen 8080;
+  server_tokens off;
+
+  set $origin_ok 0;
+  if ($http_x_origin_verify = "$${ORIGIN_HEADER_VALUE}") { set $origin_ok 1; }
+  if ($http_x_origin_verify = "$${ORIGIN_HEADER_VALUE_PREV}") { set $origin_ok 1; }
+  # ALB health check has no origin secret — keep this path open
+  if ($request_uri = "/healthz") { set $origin_ok 1; }
+  if ($origin_ok = 0) { return 403; }
+
+  location = /healthz {
+    default_type application/json;
+    return 200 '{"ok":true,"service":"gateway-web"}';
+  }
+  location / {
+    proxy_pass http://web:8080/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+  }
+}
+NGX
 
 cat >"$APP_DIR/apps/frontend/dist/index.html" <<'HTML'
 <!doctype html>
@@ -223,15 +541,24 @@ cat >"$APP_DIR/apps/frontend/dist/index.html" <<'HTML'
 HTML
 %{ endif ~}
 
+cat >"$WORK_DIR/gateway/Dockerfile" <<'DF'
+FROM nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+ENV ORIGIN_HEADER_VALUE=changeme
+ENV SKIP_ORIGIN_CHECK=0
+EXPOSE 8080
+DF
+%{ endif ~}
+
 cp "$APP_DIR/.env" "$WORK_DIR/.env"
 cd "$WORK_DIR"
-# Serialize builds — parallel npm on 1GB RAM OOMs and leaves ALB unhealthy
+# Serialize builds — parallel npm on small instances OOMs and leaves ALB unhealthy
 export COMPOSE_PARALLEL_LIMIT=1
 docker compose --env-file "$APP_DIR/.env" up -d --build
 
 cat >/etc/systemd/system/template-app.service <<UNIT
 [Unit]
-Description=template Docker Compose app
+Description=template Docker Compose app ($SERVICE_ROLE)
 Requires=docker.service
 After=docker.service
 
@@ -250,3 +577,49 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable template-app.service
+
+# Pull rotated origin secrets without waiting for ASG refresh (dual-period accept in nginx)
+cat >/usr/local/bin/sync-origin-secret <<'SYNC'
+#!/bin/bash
+set -euo pipefail
+APP_DIR=/opt/template
+WORK_DIR="$APP_DIR/deploy"
+ENV_FILE="$APP_DIR/.env"
+SECRET_ARN="__ORIGIN_SECRET_ARN__"
+REGION="__AWS_REGION__"
+[ -f "$ENV_FILE" ] || exit 0
+RAW=$(aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" --region "$REGION" --query SecretString --output text)
+eval "$(printf '%s' "$RAW" | python3 -c '
+import json,sys,shlex
+raw=sys.stdin.read().strip()
+try:
+    o=json.loads(raw)
+    cur=o.get("current") or ""
+    prev=o.get("previous") or cur
+except Exception:
+    cur=prev=raw
+if not prev:
+    prev="__none__"
+print("NEW_CUR="+shlex.quote(cur))
+print("NEW_PREV="+shlex.quote(prev))
+')"
+OLD_CUR=$(grep -E '^ORIGIN_HEADER_VALUE=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)
+OLD_PREV=$(grep -E '^ORIGIN_HEADER_VALUE_PREV=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)
+if [ "$OLD_CUR" = "$NEW_CUR" ] && [ "$OLD_PREV" = "$NEW_PREV" ]; then
+  exit 0
+fi
+tmp=$(mktemp)
+grep -vE '^ORIGIN_HEADER_VALUE=|^ORIGIN_HEADER_VALUE_PREV=' "$ENV_FILE" >"$tmp" || true
+printf 'ORIGIN_HEADER_VALUE=%s\nORIGIN_HEADER_VALUE_PREV=%s\n' "$NEW_CUR" "$NEW_PREV" >>"$tmp"
+mv "$tmp" "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+cp "$ENV_FILE" "$WORK_DIR/.env"
+cd "$WORK_DIR"
+docker compose --env-file "$ENV_FILE" up -d gateway --force-recreate --no-deps
+SYNC
+sed -i "s|__ORIGIN_SECRET_ARN__|${origin_secret_arn}|g; s|__AWS_REGION__|$AWS_REGION|g" /usr/local/bin/sync-origin-secret
+chmod 700 /usr/local/bin/sync-origin-secret
+echo '* * * * * root /usr/local/bin/sync-origin-secret >>/var/log/sync-origin-secret.log 2>&1' >/etc/cron.d/sync-origin-secret
+chmod 644 /etc/cron.d/sync-origin-secret
+# Run once immediately so the first boot is already in sync
+/usr/local/bin/sync-origin-secret || true

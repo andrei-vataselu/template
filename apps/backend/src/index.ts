@@ -15,12 +15,13 @@ async function main(): Promise<void> {
   const app = express();
 
   app.disable("x-powered-by");
-  app.set("trust proxy", 1);
+  app.set("trust proxy", config.trustProxyHops);
 
   app.use(
     helmet({
       contentSecurityPolicy: false,
-      crossOriginResourcePolicy: { policy: "same-origin" },
+      // SPA on site host calls API on api-* host — same-origin CORP blocks the browser.
+      crossOriginResourcePolicy: { policy: "cross-origin" },
       hsts: config.nodeEnv === "production" ? { maxAge: 31536000, includeSubDomains: true } : false,
     }),
   );
@@ -49,25 +50,11 @@ async function main(): Promise<void> {
   });
   app.use("/api", apiLimiter);
 
-  const inviteLimiter = rateLimit({
-    windowMs: 60 * 60 * 1000,
-    max: 30,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { ok: false, error: "Too many invite attempts", code: "rate_limited" },
-  });
-  app.use("/api/admin/users", inviteLimiter);
+  // Invite rate limit is applied on POST /admin/users after auth (keyed by sub).
 
   app.get("/api/health", (_req, res) => {
-    res.json({
-      ok: true,
-      service: "api",
-      app: config.appName,
-      environment: config.environment,
-      authConfigured: config.cognito.configured,
-      directory: config.databaseUrl ? "postgres" : "memory",
-      time: new Date().toISOString(),
-    });
+    // Opaque on purpose — do not fingerprint env/auth/directory (REPORT M10).
+    res.json({ ok: true });
   });
 
   app.get("/api/info", (_req, res) => {
@@ -78,9 +65,8 @@ async function main(): Promise<void> {
       auth: {
         provider: "cognito",
         configured: config.cognito.configured,
-        inviteOnly: false,
+        inviteOnly: config.inviteOnly,
         rbac: "custom-app-directory",
-        mfa: "TOTP required when pool is live",
       },
       stack: {
         backend: "Node.js + TypeScript + Express",

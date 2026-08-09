@@ -1,47 +1,51 @@
 # Final cost gate — read before terraform apply
 #
-# Ops: cost allocation tags Application + Environment are ACTIVE (Billing).
-# Architecture: CloudFront → ALB → ASG (Docker on EC2)
+# Architecture: CloudFront → ALB (public) → ASG -app/-web (private) via 1× NAT
 #   Zero-downtime: ASG instance refresh (max >= desired+1)
-#   Scale: raise asg_desired_capacity (hard-capped by asg_max_size) — NO CPU autoscaling
+#   Scale: raise asg_desired_capacity / web_asg_* (hard-capped) — NO CPU autoscaling
 #   State: S3 backend after ./scripts/tf-backend.sh bootstrap-global + migrate
 #   CI: GitHub Actions + OIDC (infra/global)
 
 # Account-level stack (infra/global, apply once): ~$1.50–5.50/mo
 #   Terraform state bucket / CloudTrail mgmt events / flow-log storage ... ~$0–1
-#   Route 53 hosted zone (andrei-vataselu.online) ........................ $0.50
+#   Route 53 hosted zone .................................................. $0.50
 #   GuardDuty (toggleable via enable_guardduty) .......................... ~$1–4
 
 # ---------------------------------------------------------------------------
-# DEV (eu-west-1, on-demand, no free-tier, desired=1):
+# DEV (eu-west-1, on-demand, no free-tier, desired=1 each ASG):
 # ---------------------------------------------------------------------------
 #   CloudFront Free flat-rate ............. $0.00
+#   NAT Gateway (1 AZ) + EIP .............. ~$32.00
 #   ALB (Application Load Balancer) ....... ~$16.20
 #   ALB public IPv4 (2 AZs × $0.005/h) .... ~$7.30
-#   EC2 t4g.micro (730h × $0.009) ......... $6.57
-#   EC2 public IPv4 ....................... $3.65
-#   EBS gp3 30 GB ......................... ~$2.40
+#   EC2 app t4g.micro (730h × $0.009) ..... $6.57
+#   EBS gp3 30 GB (app) ................... ~$2.40
+#   EC2 web t4g.nano + EBS ................ ~$5
 #   RDS db.t4g.micro (730h × $0.016) ...... $11.68
 #   RDS gp3 20 GB ......................... ~$2.30
 #   Secrets / CloudWatch / Cognito ........ ~$2–3
+#   NAT data processing (light) ........... ~$1–3
 #   -----------------------------------------------
-#   EXPECTED MONTHLY ..................... ~$52–55
-#   HARD ALERT BUDGET .................... $55
-#   During rolling deploy (briefly 2× EC2): pennies while refresh runs
+#   EXPECTED MONTHLY ..................... ~$92–96
+#   HARD ALERT BUDGET .................... $100
+#   During rolling deploy (briefly +1 EC2): pennies while refresh runs
+#   (No EC2 public IPv4 charges — instances are private)
 
-# Scale cost (each extra t4g.micro + public IPv4 + 30GB EBS):
-#   +~$12.60/mo per instance (still capped by asg_max_size)
+# Scale cost (each extra app t4g.micro + EBS): ~+$9/mo (+ NAT data)
+# Scale cost (each extra web t4g.nano + EBS): .. ~+$5/mo
 
 # ---------------------------------------------------------------------------
-# PROD (same shape, bigger tiers, desired=1, max=3):
+# PROD (same shape, bigger tiers, desired=1 each ASG, max capped):
 # ---------------------------------------------------------------------------
 #   CloudFront Pro ........................ $15.00
+#   NAT Gateway (1 AZ) + EIP .............. ~$32.00
 #   ALB + public IPs ...................... ~$23.50
-#   EC2 t4g.small ......................... ~$13.14
-#   EC2 public IPv4 + EBS 40GB ............ ~$6.85
+#   EC2 app t4g.small + EBS 40GB .......... ~$16
+#   EC2 web t4g.micro + EBS ............... ~$9
 #   RDS db.t4g.small Multi-AZ ............. ~$48+
-#   storage / secrets / logs .............. ~$5
+#   storage / secrets / logs / NAT data ... ~$8
 #   -----------------------------------------------
-#   EXPECTED PROD ......................... ~$110+/mo
+#   EXPECTED PROD ......................... ~$157–172/mo
+#   HARD ALERT BUDGET .................... $175
 #
 # Docs: ../COST_PREDICTABILITY.md  ../CHECKLIST.md  ../README.md

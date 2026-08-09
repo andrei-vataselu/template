@@ -53,6 +53,16 @@ variable "ses_cognito_mail_enabled" {
   type        = bool
   default     = false
 }
+variable "allowed_ip_cidrs" {
+  description = "Optional IPv4 WAF allowlist for Hosted UI (same idea as CloudFront). Empty = public with rate limits + managed rules."
+  type        = list(string)
+  default     = []
+}
+variable "allowed_ipv6_cidrs" {
+  description = "Optional IPv6 WAF allowlist for Hosted UI. Cognito custom domains are IPv6-enabled; browsers often hit auth.* over IPv6 even when the site CF ACL is IPv4-only."
+  type        = list(string)
+  default     = []
+}
 variable "tags" {
   type    = map(string)
   default = {}

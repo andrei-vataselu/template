@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { assertCognitoAccountActive } from "../cognito/admin.js";
 import type { Permission } from "../rbac/permissions.js";
 import { syncUserFromAccessToken } from "../services/users.js";
 import { AuthError, verifyAccessToken } from "./cognitoJwt.js";
@@ -30,6 +31,21 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     }
 
     const identity = await verifyAccessToken(token);
+
+    // Cognito disable/unconfirmed can outlive JWT expiry; check AdminGetUser (cached).
+    const cognitoGate = await assertCognitoAccountActive({
+      username: identity.username,
+      cognitoSub: identity.sub,
+    });
+    if (cognitoGate === "disabled" || cognitoGate === "unconfirmed") {
+      res.status(403).json({
+        ok: false,
+        error: cognitoGate === "unconfirmed" ? "Account not confirmed" : "Account disabled",
+        code: cognitoGate === "unconfirmed" ? "account_unconfirmed" : "account_disabled",
+      });
+      return;
+    }
+
     const appUser = await syncUserFromAccessToken(token, identity.sub);
 
     if (appUser.status === "disabled") {
@@ -71,26 +87,6 @@ export function requirePermission(...needed: Permission[]) {
         error: "Insufficient permissions",
         code: "forbidden",
         missing,
-      });
-      return;
-    }
-    next();
-  };
-}
-
-/** Bridge: Cognito `admins` group OR local `admin` role. Prefer requirePermission. */
-export function requireGroups(...allowed: string[]) {
-  const needed = new Set(allowed);
-  return (req: Request, res: Response, next: NextFunction): void => {
-    const groups = req.user?.groups ?? [];
-    const roles = req.appUser?.roles ?? [];
-    const ok =
-      groups.some((g) => needed.has(g)) || (needed.has("admins") && roles.includes("admin"));
-    if (!ok) {
-      res.status(403).json({
-        ok: false,
-        error: "Insufficient permissions",
-        code: "forbidden",
       });
       return;
     }

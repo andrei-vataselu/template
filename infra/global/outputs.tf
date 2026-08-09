@@ -32,6 +32,11 @@ output "guardduty_enabled" {
 }
 
 output "github_actions_role_arn" {
-  description = "GitHub Actions variable AWS_ROLE_ARN"
+  description = "GitHub Actions variable AWS_ROLE_ARN (Terraform plan/apply)"
   value       = var.enable_github_oidc ? aws_iam_role.github_terraform[0].arn : null
+}
+
+output "github_deploy_role_arn" {
+  description = "GitHub Actions variable AWS_DEPLOY_ROLE_ARN (FE/BE ASG roll only)"
+  value       = var.enable_github_oidc ? aws_iam_role.github_deploy[0].arn : null
 }

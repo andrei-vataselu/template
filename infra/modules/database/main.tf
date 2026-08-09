@@ -1,3 +1,20 @@
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.0"
+    }
+    archive = {
+      source  = "hashicorp/archive"
+      version = ">= 2.0"
+    }
+  }
+}
+
 resource "aws_db_subnet_group" "this" {
   name       = "${var.project_name}-${var.environment}-db"
   subnet_ids = var.subnet_ids
@@ -56,5 +73,34 @@ resource "aws_db_instance" "this" {
 
   tags = merge(var.tags, {
     Name = "${var.project_name}-${var.environment}-pg"
+  })
+}
+
+# Least-privilege runtime role for the API (not the RDS master).
+# CREATE/ALTER ROLE is done by the VPC Lambda in ensure_app_lambda.tf — not by EC2.
+resource "random_password" "app" {
+  length           = 32
+  special          = true
+  override_special = "!#$%&()*+,-./:;<=>?[]^_{|}~"
+}
+
+resource "aws_secretsmanager_secret" "app" {
+  name_prefix             = "${var.project_name}-${var.environment}-db-app-"
+  description             = "Postgres app runtime user (not RDS master)"
+  recovery_window_in_days = var.secret_recovery_window_in_days
+  tags = merge(var.tags, {
+    Name = "${var.project_name}-${var.environment}-db-app"
+  })
+}
+
+resource "aws_secretsmanager_secret_version" "app" {
+  secret_id = aws_secretsmanager_secret.app.id
+  secret_string = jsonencode({
+    username = "app"
+    password = random_password.app.result
+    engine   = "postgres"
+    host     = aws_db_instance.this.address
+    port     = aws_db_instance.this.port
+    dbname   = "app"
   })
 }

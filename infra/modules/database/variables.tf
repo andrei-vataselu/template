@@ -1,6 +1,17 @@
 variable "project_name" { type = string }
 variable "environment" { type = string }
-variable "subnet_ids" { type = list(string) }
+variable "vpc_id" {
+  description = "VPC for the ensure-app Lambda ENIs"
+  type        = string
+}
+variable "subnet_ids" {
+  description = "Private DB subnet IDs for the RDS subnet group"
+  type        = list(string)
+}
+variable "lambda_subnet_ids" {
+  description = "Private app subnet IDs (NAT egress) for the ensure-app Lambda"
+  type        = list(string)
+}
 variable "security_group_id" { type = string }
 variable "instance_class" {
   type    = string
@@ -29,6 +40,12 @@ variable "deletion_protection" {
 variable "skip_final_snapshot" {
   type    = bool
   default = true
+}
+
+variable "secret_recovery_window_in_days" {
+  description = "Secrets Manager recovery window for the app DB secret (0 = force delete; prod typically 7)."
+  type        = number
+  default     = 0
 }
 
 variable "tags" {

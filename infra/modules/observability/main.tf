@@ -122,13 +122,58 @@ resource "aws_cloudwatch_metric_alarm" "unhealthy_hosts" {
   period              = 60
   statistic           = "Average"
   threshold           = 1
-  alarm_description   = "ALB has unhealthy targets — deploy or instance may be failing health checks"
+  alarm_description   = "ALB has unhealthy API targets — deploy or instance may be failing health checks"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
 
   dimensions = {
     LoadBalancer = var.alb_arn_suffix
     TargetGroup  = var.target_group_arn_suffix
+  }
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "web_unhealthy_hosts" {
+  count = var.enable_web_alarms ? 1 : 0
+
+  alarm_name          = "${var.project_name}-${var.environment}-web-unhealthy-hosts"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 2
+  metric_name         = "UnHealthyHostCount"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 1
+  alarm_description   = "ALB has unhealthy frontend targets — deploy or instance may be failing health checks"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    LoadBalancer = var.alb_arn_suffix
+    TargetGroup  = var.web_target_group_arn_suffix
+  }
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "web_asg_cpu" {
+  count = var.enable_web_alarms ? 1 : 0
+
+  alarm_name          = "${var.project_name}-${var.environment}-web-asg-cpu"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 85
+  alarm_description   = "Frontend ASG average CPU high — raise web_asg_desired_capacity manually if sustained"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    AutoScalingGroupName = var.web_asg_name
   }
 
   tags = var.tags
@@ -148,6 +193,28 @@ resource "aws_cloudwatch_metric_alarm" "rds_storage" {
 
   dimensions = {
     DBInstanceIdentifier = var.db_instance_id
+  }
+
+  tags = var.tags
+}
+
+# Spike in target 4xx often means bad/missing origin secret or probing the ALB.
+resource "aws_cloudwatch_metric_alarm" "alb_target_4xx" {
+  alarm_name          = "${var.project_name}-${var.environment}-alb-target-4xx"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "HTTPCode_Target_4XX_Count"
+  namespace           = "AWS/ApplicationELB"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 80
+  treat_missing_data  = "notBreaching"
+  alarm_description   = "Elevated ALB target 4xx (possible origin-secret mismatch or origin probing) — check gateway 403s / rotate status"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    LoadBalancer = var.alb_arn_suffix
   }
 
   tags = var.tags

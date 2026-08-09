@@ -46,3 +46,7 @@ infra/backends/*.hcl
 
 # local SSM diagnostic dumps
 .ssm-*
+
+# Generated Lambda zip (built by archive_file at plan/apply)
+infra/modules/database/ensure_app.zip
+infra/modules/origin_rotate/rotate.zip

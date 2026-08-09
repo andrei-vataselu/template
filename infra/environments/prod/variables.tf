@@ -33,12 +33,19 @@ variable "alert_email" {
 variable "monthly_budget_usd" {
   description = "Hard internal monthly budget (alerts only — not a real-time cut-off)"
   type        = number
-  default     = 100
+  default     = 140
 }
 
 variable "instance_type" {
-  type    = string
-  default = "t4g.small"
+  description = "Backend (API) instance type"
+  type        = string
+  default     = "t4g.small"
+}
+
+variable "web_instance_type" {
+  description = "Frontend instance type (static nginx needs little; keeps the split near cost-neutral)"
+  type        = string
+  default     = "t4g.micro"
 }
 
 variable "db_instance_class" {
@@ -57,6 +64,12 @@ variable "app_git_url" {
   default     = ""
 }
 
+variable "app_git_sha" {
+  description = "Optional commit SHA seed for SSM /{project}/{env}/app-git-sha (empty = unpinned until deploy writes github.sha)"
+  type        = string
+  default     = ""
+}
+
 variable "db_storage_gb" {
   type    = number
   default = 20
@@ -64,7 +77,7 @@ variable "db_storage_gb" {
 
 variable "backup_retention_days" {
   type    = number
-  default = 3
+  default = 7
 }
 
 variable "db_multi_az" {
@@ -72,14 +85,16 @@ variable "db_multi_az" {
   default = false
 }
 
+# Safe-by-default for production data: protect against accidental
+# `terraform destroy` and always keep a final snapshot
 variable "db_deletion_protection" {
   type    = bool
-  default = false
+  default = true
 }
 
 variable "db_skip_final_snapshot" {
   type    = bool
-  default = true
+  default = false
 }
 
 variable "vpc_cidr" {
@@ -99,6 +114,12 @@ variable "allowed_ip_cidrs" {
   default     = []
 }
 
+variable "allowed_ipv6_cidrs" {
+  description = "IPv6 CIDRs allowed through Cognito Hosted UI WAF. Needed when auth.* is dual-stack and browsers prefer IPv6."
+  type        = list(string)
+  default     = []
+}
+
 variable "asg_min_size" {
   type    = number
   default = 1
@@ -114,4 +135,26 @@ variable "asg_max_size" {
   description = "Hard cap. Keep >= desired+1 so rolling deploys can launch a replacement first."
   type        = number
   default     = 3
+}
+
+variable "web_asg_min_size" {
+  type    = number
+  default = 1
+}
+
+variable "web_asg_desired_capacity" {
+  type    = number
+  default = 1
+}
+
+variable "web_asg_max_size" {
+  description = "Hard cap for frontend instances. Keep >= desired+1 for rolling deploys."
+  type        = number
+  default     = 2
+}
+
+variable "ami_id" {
+  description = "Optional AMI ID pin for ASG launch templates. Empty = latest AL2023 ARM64 from SSM."
+  type        = string
+  default     = ""
 }

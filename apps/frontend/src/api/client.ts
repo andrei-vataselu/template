@@ -16,6 +16,16 @@ type ApiOptions = RequestInit & {
   auth?: boolean;
 };
 
+/**
+ * Absolute API base (e.g. https://api-dev.example.com) baked at build time.
+ * Empty = same-origin relative /api/... (local dev, single-box deploys).
+ */
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "").trim().replace(/\/+$/, "");
+
+export function resolveApiUrl(path: string): string {
+  return API_BASE_URL ? `${API_BASE_URL}${path}` : path;
+}
+
 export async function apiFetch<T>(path: string, options: ApiOptions = {}): Promise<T> {
   const headers = new Headers(options.headers);
   if (!headers.has("Accept")) {
@@ -31,7 +41,7 @@ export async function apiFetch<T>(path: string, options: ApiOptions = {}): Promi
     headers.set("Authorization", `Bearer ${token}`);
   }
 
-  const res = await fetch(path, { ...options, headers });
+  const res = await fetch(resolveApiUrl(path), { ...options, headers });
 
   if (res.status === 401 && options.auth) {
     logoutLocal();

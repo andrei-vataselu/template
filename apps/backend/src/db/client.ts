@@ -21,6 +21,9 @@ export async function initIdentityStore(): Promise<IdentityStore> {
     store = pgStore;
     console.log("[identity] using postgres store");
   } else {
+    if (config.nodeEnv === "production" || config.environment === "prod") {
+      throw new Error("DATABASE_URL is required in production");
+    }
     const mem = new MemoryIdentityStore();
     await mem.ready();
     store = mem;

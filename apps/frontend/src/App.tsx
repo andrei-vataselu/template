@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { apiFetch, ApiError } from "./api/client";
 import { useAuth } from "./auth/AuthContext";
 import { AuthShell } from "./auth/AuthShell";
-import { completeLogin } from "./auth/cognitoAuth";
+import { completeLogin, isInviteOnly } from "./auth/cognitoAuth";
 import { ensureHttpsOrigin } from "./auth/config";
 
 type Health = {
@@ -212,14 +212,16 @@ function HomePage() {
             </button>
           ) : auth.configured ? (
             <>
-              <button
-                type="button"
-                className="btn ghost"
-                onClick={() => window.location.assign("/signup")}
-                disabled={auth.status === "loading"}
-              >
-                Sign up
-              </button>
+              {!isInviteOnly() ? (
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={() => window.location.assign("/signup")}
+                  disabled={auth.status === "loading"}
+                >
+                  Sign up
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="btn"
@@ -369,6 +371,10 @@ export default function App() {
     return <AuthShell screen="login" />;
   }
   if (path === "/signup") {
+    if (isInviteOnly()) {
+      window.location.replace("/login");
+      return null;
+    }
     return <AuthShell screen="signup" />;
   }
   if (path === "/forgot-password") {

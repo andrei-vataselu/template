@@ -15,7 +15,21 @@ output "cloudfront_distribution_id" {
 }
 
 output "asg_name" {
-  value = module.compute.asg_name
+  description = "Backend (API) ASG"
+  value       = module.compute.asg_name
+}
+
+output "web_asg_name" {
+  description = "Frontend (web) ASG"
+  value       = module.compute.web_asg_name
+}
+
+output "api_url" {
+  value = module.edge.api_url
+}
+
+output "api_cloudfront_distribution_id" {
+  value = module.edge.api_distribution_id
 }
 
 output "alb_dns_name" {
@@ -63,5 +77,6 @@ output "manual_next_steps" {
        (or: aws autoscaling start-instance-refresh --auto-scaling-group-name ${module.compute.asg_name})
     5. Scale (predictable): set asg_desired_capacity in tfvars (cap = asg_max_size=${var.asg_max_size})
     6. SSM Session Manager for shell access (no SSH)
+    7. App pin: deploy workflows write github.sha to ${module.compute.app_git_sha_parameter_name} before ASG rolls (optional tfvars seed: app_git_sha)
   EOT
 }

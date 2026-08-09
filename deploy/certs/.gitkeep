@@ -1,0 +1,2 @@
+# EC2 user_data downloads the RDS global CA bundle here (rds-global-bundle.pem)
+# so the API container can do full TLS verification against RDS.

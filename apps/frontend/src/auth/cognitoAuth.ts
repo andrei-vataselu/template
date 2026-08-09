@@ -1,3 +1,4 @@
+import { createRemoteJWKSet, jwtVerify } from "jose";
 import { loadCognitoConfig, type CognitoPublicConfig } from "./config";
 import { createPkceChallenge, randomUrlSafe } from "./pkce";
 import {
@@ -25,11 +26,28 @@ export type IdTokenClaims = {
   email_verified?: boolean;
   "cognito:username"?: string;
   "cognito:groups"?: string[];
+  nonce?: string;
+  aud?: string | string[];
   exp?: number;
 };
 
 /** Cognito Hosted UI screens — auth logic lives entirely in Cognito. */
 export type CognitoAuthScreen = "login" | "signup" | "forgotPassword";
+
+let jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
+let jwksIssuer: string | null = null;
+
+function getIdTokenJwks(cfg: CognitoPublicConfig) {
+  const issuer = `https://cognito-idp.${cfg.region}.amazonaws.com/${cfg.userPoolId}`;
+  if (!jwks || jwksIssuer !== issuer) {
+    jwks = createRemoteJWKSet(new URL(`${issuer}/.well-known/jwks.json`), {
+      cooldownDuration: 30_000,
+      cacheMaxAge: 600_000,
+    });
+    jwksIssuer = issuer;
+  }
+  return { jwks, issuer };
+}
 
 function decodeJwtPayload(token: string): Record<string, unknown> {
   const part = token.split(".")[1];
@@ -41,6 +59,36 @@ function decodeJwtPayload(token: string): Record<string, unknown> {
 
 export function readIdTokenClaims(idToken: string): IdTokenClaims {
   return decodeJwtPayload(idToken) as IdTokenClaims;
+}
+
+/**
+ * Verify ID token signature + OIDC claims (nonce/aud/exp).
+ * Signature verification uses Cognito JWKS via jose — do not skip this in production flows.
+ */
+async function verifyIdToken(
+  idToken: string,
+  cfg: CognitoPublicConfig,
+  expectedNonce: string,
+): Promise<IdTokenClaims> {
+  const { jwks: keys, issuer } = getIdTokenJwks(cfg);
+  const { payload } = await jwtVerify(idToken, keys, {
+    issuer,
+    audience: cfg.clientId,
+    clockTolerance: 30,
+    algorithms: ["RS256"],
+  });
+
+  if (payload.token_use !== "id") {
+    throw new Error("Expected an ID token");
+  }
+  if (typeof payload.nonce !== "string" || payload.nonce !== expectedNonce) {
+    throw new Error("ID token nonce mismatch");
+  }
+  if (typeof payload.sub !== "string" || !payload.sub) {
+    throw new Error("ID token missing subject");
+  }
+
+  return payload as IdTokenClaims;
 }
 
 function sessionFromTokenResponse(tokens: TokenResponse, previous?: StoredSession | null): StoredSession {
@@ -72,6 +120,11 @@ export function isAuthConfigured(): boolean {
   return loadCognitoConfig() !== null;
 }
 
+/** True when self-signup UI should be hidden (invite-only deploy). */
+export function isInviteOnly(): boolean {
+  return import.meta.env.VITE_INVITE_ONLY === "1";
+}
+
 /**
  * Hand the browser to Cognito Hosted UI (HTTPS).
  * The SPA only starts PKCE + handles /callback — passwords never touch our servers.
@@ -79,6 +132,10 @@ export function isAuthConfigured(): boolean {
 export async function beginAuth(screen: CognitoAuthScreen = "login"): Promise<void> {
   const cfg = loadCognitoConfig();
   if (!cfg) throw new Error("Cognito is not configured");
+
+  if (screen === "signup" && isInviteOnly()) {
+    throw new Error("Self-signup is disabled");
+  }
 
   const state = randomUrlSafe(16);
   const nonce = randomUrlSafe(16);
@@ -140,10 +197,8 @@ export async function completeLogin(url: URL = new URL(window.location.href)): P
   });
 
   const tokens = await postToken(cfg, body);
-  const claims = readIdTokenClaims(tokens.id_token);
-  if (typeof claims.sub !== "string") {
-    throw new Error("ID token missing subject");
-  }
+  // Verify ID token signature (JWKS) + nonce/aud/exp — prevents token substitution.
+  await verifyIdToken(tokens.id_token, cfg, pending.nonce);
 
   const session = sessionFromTokenResponse(tokens);
   clearPendingAuth();

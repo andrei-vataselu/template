@@ -19,7 +19,8 @@ export type RoleName = (typeof ROLE_NAMES)[number];
 export const ROLE_PERMISSIONS: Record<RoleName, readonly Permission[]> = {
   admin: [...PERMISSIONS],
   member: [],
-  viewer: ["users:read"],
+  // Directory listing is admin-only (REPORT M9).
+  viewer: [],
 };
 
 export function isPermission(value: string): value is Permission {

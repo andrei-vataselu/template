@@ -22,3 +22,7 @@ output "ses_domain_identity_arn" {
 output "from_email_address" {
   value = var.from_email_address
 }
+
+output "waf_web_acl_arn" {
+  value = aws_wafv2_web_acl.cognito.arn
+}

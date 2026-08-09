@@ -14,10 +14,18 @@ export const config = {
   appName: process.env.APP_NAME ?? "template",
   nodeEnv: process.env.NODE_ENV ?? "development",
   databaseUrl,
+  /**
+   * Trusted proxy hops in front of Express. Must match the real chain or
+   * req.ip (rate-limit key) resolves to a proxy instead of the client:
+   * CloudFront -> ALB -> nginx gateway = 3 on AWS, 1 behind a lone gateway.
+   */
+  trustProxyHops: Math.max(0, Number(process.env.TRUST_PROXY_HOPS ?? 1) || 0),
   allowedOrigins: (process.env.ALLOWED_ORIGINS ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean),
+  /** When true, Cognito users without a local row are rejected (must be invited). */
+  inviteOnly: ["1", "true", "yes"].includes((process.env.INVITE_ONLY ?? "").trim().toLowerCase()),
   cognito: {
     region,
     userPoolId,

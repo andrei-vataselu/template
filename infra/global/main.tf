@@ -51,24 +51,74 @@ resource "aws_s3_bucket_public_access_block" "tfstate" {
   restrict_public_buckets = true
 }
 
+# Principal lock: only account root + GitHub Terraform CI role may use the
+# state bucket. Local applies must use root (or assume that role). AWS service
+# principals (e.g. future inventory/replication) are exempt from the Deny.
+locals {
+  tfstate_allowed_principal_arns = compact(concat(
+    [
+      "arn:aws:iam::${local.account_id}:root",
+    ],
+    var.enable_github_oidc ? [
+      aws_iam_role.github_terraform[0].arn,
+      "arn:aws:sts::${local.account_id}:assumed-role/${aws_iam_role.github_terraform[0].name}/*",
+    ] : [],
+  ))
+}
+
 resource "aws_s3_bucket_policy" "tfstate_tls_only" {
   bucket = aws_s3_bucket.tfstate.id
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid       = "DenyInsecureTransport"
-      Effect    = "Deny"
-      Principal = "*"
-      Action    = "s3:*"
-      Resource = [
-        aws_s3_bucket.tfstate.arn,
-        "${aws_s3_bucket.tfstate.arn}/*"
-      ]
-      Condition = {
-        Bool = { "aws:SecureTransport" = "false" }
+    Statement = [
+      {
+        Sid    = "AllowRootAndGithubTerraform"
+        Effect = "Allow"
+        Principal = {
+          AWS = concat(
+            ["arn:aws:iam::${local.account_id}:root"],
+            var.enable_github_oidc ? [aws_iam_role.github_terraform[0].arn] : []
+          )
+        }
+        Action = "s3:*"
+        Resource = [
+          aws_s3_bucket.tfstate.arn,
+          "${aws_s3_bucket.tfstate.arn}/*"
+        ]
+      },
+      {
+        Sid       = "DenyOtherPrincipals"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.tfstate.arn,
+          "${aws_s3_bucket.tfstate.arn}/*"
+        ]
+        Condition = {
+          ArnNotLike = {
+            "aws:PrincipalArn" = local.tfstate_allowed_principal_arns
+          }
+          Bool = {
+            "aws:PrincipalIsAWSService" = "false"
+          }
+        }
+      },
+      {
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.tfstate.arn,
+          "${aws_s3_bucket.tfstate.arn}/*"
+        ]
+        Condition = {
+          Bool = { "aws:SecureTransport" = "false" }
+        }
       }
-    }]
+    ]
   })
 
   depends_on = [aws_s3_bucket_public_access_block.tfstate]
@@ -313,8 +363,8 @@ resource "aws_accessanalyzer_analyzer" "external" {
 resource "aws_iam_openid_connect_provider" "github" {
   count = var.enable_github_oidc ? 1 : 0
 
-  url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
   # Pin known GitHub Actions CA thumbprints (dynamic TLS lookup can lag / drift).
   thumbprint_list = [
     "6938fd4d98bab03faadb97b34396831e3780aea1",
@@ -322,10 +372,197 @@ resource "aws_iam_openid_connect_provider" "github" {
   ]
 }
 
+# Cap CI role privileges: no IAM users/keys; no PutRolePolicy on the CI roles
+# themselves (defense in depth alongside DenySelfEscalation below).
+resource "aws_iam_policy" "permissions_boundary" {
+  count = var.enable_github_oidc ? 1 : 0
+
+  name        = "${var.project_name}-ci-permissions-boundary"
+  description = "Permissions boundary for GitHub OIDC CI roles"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowAllExceptBoundaryDenies"
+        Effect = "Allow"
+        NotAction = [
+          "iam:CreateUser",
+          "iam:CreateAccessKey",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid      = "DenyCreateUserAndAccessKeys"
+        Effect   = "Deny"
+        Action   = ["iam:CreateUser", "iam:CreateAccessKey"]
+        Resource = "*"
+      },
+      {
+        Sid    = "DenyPutRolePolicyOnGithubRoles"
+        Effect = "Deny"
+        Action = "iam:PutRolePolicy"
+        Resource = [
+          "arn:aws:iam::${local.account_id}:role/${var.project_name}-github-terraform",
+          "arn:aws:iam::${local.account_id}:role/${var.project_name}-github-deploy",
+        ]
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role" "github_terraform" {
   count = var.enable_github_oidc ? 1 : 0
 
-  name = "${var.project_name}-github-terraform"
+  name                 = "${var.project_name}-github-terraform"
+  permissions_boundary = aws_iam_policy.permissions_boundary[0].arn
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = aws_iam_openid_connect_provider.github[0].arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        }
+        # No repo:* — only main pushes and GitHub Environments (dev/prod).
+        StringLike = {
+          "token.actions.githubusercontent.com:sub" = [
+            "repo:${var.github_repository}:ref:refs/heads/main",
+            "repo:${var.github_repository}:environment:dev",
+            "repo:${var.github_repository}:environment:prod",
+            "repo:${split("/", var.github_repository)[0]}@*/${split("/", var.github_repository)[1]}@*:ref:refs/heads/main",
+            "repo:${split("/", var.github_repository)[0]}@*/${split("/", var.github_repository)[1]}@*:environment:dev",
+            "repo:${split("/", var.github_repository)[0]}@*/${split("/", var.github_repository)[1]}@*:environment:prod",
+          ]
+        }
+      }
+    }]
+  })
+
+  tags = {
+    Application = var.application_name
+    Environment = "global"
+  }
+}
+
+# Scoped CI permissions (was AdministratorAccess): PowerUser covers every
+# non-IAM service Terraform touches; the inline policy below adds only the
+# IAM lifecycle for project-prefixed roles/policies/instance-profiles.
+# A leaked Actions token can no longer administer IAM account-wide.
+resource "aws_iam_role_policy_attachment" "github_terraform_poweruser" {
+  count = var.enable_github_oidc ? 1 : 0
+
+  role       = aws_iam_role.github_terraform[0].name
+  policy_arn = "arn:aws:iam::aws:policy/PowerUserAccess"
+}
+
+resource "aws_iam_role_policy" "github_terraform_iam_scoped" {
+  count = var.enable_github_oidc ? 1 : 0
+
+  name = "${var.project_name}-github-terraform-iam-scoped"
+  role = aws_iam_role.github_terraform[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "IamRead"
+        Effect   = "Allow"
+        Action   = ["iam:Get*", "iam:List*"]
+        Resource = "*"
+      },
+      {
+        Sid    = "ProjectIamLifecycle"
+        Effect = "Allow"
+        Action = [
+          "iam:CreateRole",
+          "iam:DeleteRole",
+          "iam:UpdateRole",
+          "iam:UpdateRoleDescription",
+          "iam:UpdateAssumeRolePolicy",
+          "iam:TagRole",
+          "iam:UntagRole",
+          "iam:PutRolePolicy",
+          "iam:DeleteRolePolicy",
+          "iam:AttachRolePolicy",
+          "iam:DetachRolePolicy",
+          "iam:CreatePolicy",
+          "iam:DeletePolicy",
+          "iam:CreatePolicyVersion",
+          "iam:DeletePolicyVersion",
+          "iam:TagPolicy",
+          "iam:UntagPolicy",
+          "iam:CreateInstanceProfile",
+          "iam:DeleteInstanceProfile",
+          "iam:AddRoleToInstanceProfile",
+          "iam:RemoveRoleFromInstanceProfile",
+          "iam:TagInstanceProfile",
+          "iam:UntagInstanceProfile"
+        ]
+        Resource = [
+          "arn:aws:iam::*:role/${var.project_name}-*",
+          "arn:aws:iam::*:policy/${var.project_name}-*",
+          "arn:aws:iam::*:instance-profile/${var.project_name}-*"
+        ]
+      },
+      {
+        # Closes REPORT C2 — CI must never mutate its own trust/policies.
+        Sid    = "DenySelfEscalation"
+        Effect = "Deny"
+        Action = [
+          "iam:PutRolePolicy",
+          "iam:DeleteRolePolicy",
+          "iam:AttachRolePolicy",
+          "iam:DetachRolePolicy",
+          "iam:UpdateAssumeRolePolicy",
+          "iam:UpdateRole",
+          "iam:DeleteRole",
+          "iam:CreatePolicyVersion",
+          "iam:SetDefaultPolicyVersion"
+        ]
+        Resource = [
+          "arn:aws:iam::*:role/${var.project_name}-github-terraform",
+          "arn:aws:iam::*:role/${var.project_name}-github-deploy",
+        ]
+      },
+      {
+        Sid      = "PassProjectRolesToServices"
+        Effect   = "Allow"
+        Action   = "iam:PassRole"
+        Resource = "arn:aws:iam::*:role/${var.project_name}-*"
+        Condition = {
+          StringEquals = {
+            "iam:PassedToService" = [
+              "ec2.amazonaws.com",
+              "vpc-flow-logs.amazonaws.com",
+              "rds.amazonaws.com",
+              "cognito-idp.amazonaws.com",
+              "lambda.amazonaws.com"
+            ]
+          }
+        }
+      },
+      {
+        Sid      = "ServiceLinkedRoles"
+        Effect   = "Allow"
+        Action   = "iam:CreateServiceLinkedRole"
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# Minimal CD role — ASG refresh only (FE/BE deploy workflows).
+resource "aws_iam_role" "github_deploy" {
+  count = var.enable_github_oidc ? 1 : 0
+
+  name                 = "${var.project_name}-github-deploy"
+  permissions_boundary = aws_iam_policy.permissions_boundary[0].arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -340,11 +577,13 @@ resource "aws_iam_role" "github_terraform" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          # Classic: repo:ORG/REPO:...
-          # GitHub nID format: repo:ORG@OWNER_ID/REPO@REPO_ID:environment:dev
           "token.actions.githubusercontent.com:sub" = [
-            "repo:${var.github_repository}:*",
-            "repo:${split("/", var.github_repository)[0]}@*/${split("/", var.github_repository)[1]}@*:*",
+            "repo:${var.github_repository}:ref:refs/heads/main",
+            "repo:${var.github_repository}:environment:dev",
+            "repo:${var.github_repository}:environment:prod",
+            "repo:${split("/", var.github_repository)[0]}@*/${split("/", var.github_repository)[1]}@*:ref:refs/heads/main",
+            "repo:${split("/", var.github_repository)[0]}@*/${split("/", var.github_repository)[1]}@*:environment:dev",
+            "repo:${split("/", var.github_repository)[0]}@*/${split("/", var.github_repository)[1]}@*:environment:prod",
           ]
         }
       }
@@ -357,10 +596,27 @@ resource "aws_iam_role" "github_terraform" {
   }
 }
 
-# Bootstrap convenience: full admin for Terraform CI. Tighten with SCPs / least-privilege later.
-resource "aws_iam_role_policy_attachment" "github_terraform_admin" {
+resource "aws_iam_role_policy" "github_deploy" {
   count = var.enable_github_oidc ? 1 : 0
 
-  role       = aws_iam_role.github_terraform[0].name
-  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+  name = "${var.project_name}-github-deploy"
+  role = aws_iam_role.github_deploy[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AsgRefresh"
+        Effect = "Allow"
+        Action = [
+          "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:DescribeInstanceRefreshes",
+          "autoscaling:StartInstanceRefresh",
+          "ec2:DescribeInstances",
+          "ec2:DescribeInstanceStatus",
+        ]
+        Resource = "*"
+      }
+    ]
+  })
 }

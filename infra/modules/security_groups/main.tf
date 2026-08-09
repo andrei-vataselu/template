@@ -19,11 +19,23 @@ resource "aws_security_group" "alb" {
 
 resource "aws_security_group" "app" {
   name        = "${var.project_name}-${var.environment}-app"
-  description = "App instances - ALB only; no SSH/RDP"
+  description = "API instances - ALB only; no SSH/RDP"
   vpc_id      = var.vpc_id
 
   tags = merge(var.tags, {
     Name = "${var.project_name}-${var.environment}-app-sg"
+  })
+}
+
+# Frontend instances get their own SG: same ALB-only ingress but NO database
+# egress — a compromised web box cannot even open a TCP connection to RDS.
+resource "aws_security_group" "web" {
+  name        = "${var.project_name}-${var.environment}-web"
+  description = "Web (frontend) instances - ALB only; no SSH/RDP; no DB access"
+  vpc_id      = var.vpc_id
+
+  tags = merge(var.tags, {
+    Name = "${var.project_name}-${var.environment}-web-sg"
   })
 }
 
@@ -52,11 +64,20 @@ resource "aws_vpc_security_group_ingress_rule" "alb_https_from_cloudfront" {
 
 resource "aws_vpc_security_group_egress_rule" "alb_to_app" {
   security_group_id            = aws_security_group.alb.id
-  description                  = "Forward to app instances"
+  description                  = "Forward to API instances"
   from_port                    = 80
   to_port                      = 80
   ip_protocol                  = "tcp"
   referenced_security_group_id = aws_security_group.app.id
+}
+
+resource "aws_vpc_security_group_egress_rule" "alb_to_web" {
+  security_group_id            = aws_security_group.alb.id
+  description                  = "Forward to web instances"
+  from_port                    = 80
+  to_port                      = 80
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.web.id
 }
 
 # --- App ingress (ALB only) ---
@@ -70,11 +91,22 @@ resource "aws_vpc_security_group_ingress_rule" "app_http_from_alb" {
   referenced_security_group_id = aws_security_group.alb.id
 }
 
+# --- Web ingress (ALB only) ---
+
+resource "aws_vpc_security_group_ingress_rule" "web_http_from_alb" {
+  security_group_id            = aws_security_group.web.id
+  description                  = "HTTP from ALB only"
+  from_port                    = 80
+  to_port                      = 80
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.alb.id
+}
+
 # --- App egress (least privilege: updates/git + DB) ---
 
 resource "aws_vpc_security_group_egress_rule" "app_https_out" {
   security_group_id = aws_security_group.app.id
-  description       = "HTTPS for SSM, dnf, Docker Hub, git (no NAT; public subnet)"
+  description       = "HTTPS for SSM, dnf, Docker Hub, git (via NAT from private subnet)"
   from_port         = 443
   to_port           = 443
   ip_protocol       = "tcp"
@@ -97,6 +129,26 @@ resource "aws_vpc_security_group_egress_rule" "app_postgres_to_db" {
   to_port                      = 5432
   ip_protocol                  = "tcp"
   referenced_security_group_id = aws_security_group.db.id
+}
+
+# --- Web egress (updates/git only — deliberately NO database rule) ---
+
+resource "aws_vpc_security_group_egress_rule" "web_https_out" {
+  security_group_id = aws_security_group.web.id
+  description       = "HTTPS for SSM, dnf, Docker Hub, git (via NAT from private subnet)"
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+resource "aws_vpc_security_group_egress_rule" "web_dns_out" {
+  security_group_id = aws_security_group.web.id
+  description       = "DNS to VPC resolver only (blocks DNS exfiltration)"
+  from_port         = 53
+  to_port           = 53
+  ip_protocol       = "udp"
+  cidr_ipv4         = data.aws_vpc.this.cidr_block
 }
 
 # --- DB ingress (no egress rules: stateful responses still flow) ---

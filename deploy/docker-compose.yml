@@ -1,7 +1,11 @@
+# Role selection (set in .env):
+#   COMPOSE_PROFILES=api        -> backend EC2 instance (gateway + api)
+#   COMPOSE_PROFILES=web        -> frontend EC2 instance (gateway + web)
+#   COMPOSE_PROFILES=local,api,web + GATEWAY_MODE=all -> everything locally
 services:
   db:
     profiles: ["local"]
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
     environment:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: localdev
@@ -22,10 +26,17 @@ services:
       - "80:8080"
     environment:
       ORIGIN_HEADER_VALUE: ${ORIGIN_HEADER_VALUE:-local-dev-secret}
-      SKIP_ORIGIN_CHECK: ${SKIP_ORIGIN_CHECK:-1}
+      ORIGIN_HEADER_VALUE_PREV: ${ORIGIN_HEADER_VALUE_PREV:-local-dev-secret}
+      SKIP_ORIGIN_CHECK: ${SKIP_ORIGIN_CHECK:-0}
+      # api | web | all — selects which nginx config the gateway renders
+      NGINX_ENVSUBST_TEMPLATE_DIR: /etc/nginx/templates-${GATEWAY_MODE:-all}
     depends_on:
-      - api
-      - web
+      api:
+        condition: service_started
+        required: false
+      web:
+        condition: service_started
+        required: false
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -35,6 +46,7 @@ services:
     pids_limit: 100
 
   api:
+    profiles: ["api"]
     build: ../apps/backend
     environment:
       PORT: "3000"
@@ -44,12 +56,20 @@ services:
       NODE_ENV: production
       DATABASE_URL: ${DATABASE_URL:-}
       DATABASE_SSL: ${DATABASE_SSL:-0}
+      DATABASE_SSL_STRICT: ${DATABASE_SSL_STRICT:-0}
+      # RDS CA bundle for strict TLS verification (downloaded at boot on EC2)
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS:-}
+      # Proxy hops in front of Express: CloudFront -> ALB -> gateway = 3 on AWS
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-1}
       COGNITO_REGION: ${COGNITO_REGION:-}
       COGNITO_USER_POOL_ID: ${COGNITO_USER_POOL_ID:-}
       COGNITO_CLIENT_ID: ${COGNITO_CLIENT_ID:-}
       BOOTSTRAP_ADMIN_EMAILS: ${BOOTSTRAP_ADMIN_EMAILS:-}
       BOOTSTRAP_ADMIN_SUBS: ${BOOTSTRAP_ADMIN_SUBS:-}
+      INVITE_ONLY: ${INVITE_ONLY:-0}
       AWS_REGION: ${COGNITO_REGION:-${AWS_REGION:-eu-west-1}}
+    volumes:
+      - ./certs:/certs:ro
     expose:
       - "3000"
     restart: unless-stopped
@@ -75,6 +95,7 @@ services:
       retries: 5
 
   web:
+    profiles: ["web"]
     build:
       context: ../apps/frontend
       args:
@@ -82,6 +103,9 @@ services:
         VITE_COGNITO_USER_POOL_ID: ${VITE_COGNITO_USER_POOL_ID:-${COGNITO_USER_POOL_ID:-}}
         VITE_COGNITO_CLIENT_ID: ${VITE_COGNITO_CLIENT_ID:-${COGNITO_CLIENT_ID:-}}
         VITE_COGNITO_DOMAIN: ${VITE_COGNITO_DOMAIN:-${COGNITO_DOMAIN:-}}
+        # Absolute API base (e.g. https://api-dev.example.com). Empty = same origin.
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+        VITE_INVITE_ONLY: ${VITE_INVITE_ONLY:-0}
     expose:
       - "8080"
     restart: unless-stopped

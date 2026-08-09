@@ -1,12 +1,15 @@
-# COST: expected ~$52–55/mo with ALB+ASG (see infra/COST_GATE.txt).
+# COST: expected ~$92–96/mo with ALB + NAT + split FE/BE ASGs (see COST_PREDICTABILITY.md / infra/COST_GATE.txt).
 aws_region               = "eu-west-1"
 project_name             = "popo"
 application_name         = "template"
 environment              = "dev"
 cost_center              = "cc-dev-sandbox"
 alert_email              = "YOU@example.com"
-monthly_budget_usd       = 55
-instance_type            = "t4g.micro"
+monthly_budget_usd       = 100
+instance_type            = "t4g.micro" # backend (API)
+web_instance_type        = "t4g.micro" # frontend; nano is not Free Tier–eligible on some accounts
+# Optional: pin AMI (empty = latest AL2023 ARM64 from SSM). Example: ami_id = "ami-0abc..."
+ami_id                   = ""
 db_instance_class        = "db.t4g.micro"
 root_volume_gb           = 30
 db_storage_gb            = 20
@@ -17,9 +20,17 @@ db_deletion_protection   = false
 db_skip_final_snapshot   = true
 vpc_cidr                 = "10.20.0.0/16"
 app_git_url              = "https://github.com/OWNER/REPO.git"
+# Optional seed for SSM /popo/<env>/app-git-sha (empty = "unpinned").
+# Deploy workflows overwrite this parameter with github.sha before ASG rolls.
+# app_git_sha              = ""
 domain_name              = "your-domain.tld"
 # Lock dev to your IP(s). Get yours: curl https://checkip.amazonaws.com
 allowed_ip_cidrs         = ["YOUR_IP/32"]
+# Cognito custom domain is dual-stack — prefer a host /128; use /64 only if the prefix churns.
+allowed_ipv6_cidrs       = ["YOUR_IPV6_ADDRESS/128"]
 asg_min_size             = 1
 asg_desired_capacity     = 1
 asg_max_size             = 2
+web_asg_min_size         = 1
+web_asg_desired_capacity = 1
+web_asg_max_size         = 2

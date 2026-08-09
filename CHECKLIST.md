@@ -1,114 +1,114 @@
-# Checklist — go live
+# Checklist
 
-Ordered manual steps. Check boxes as you finish them.
-
-**Companion docs:** [`README.md`](README.md) · [`BOOTSTRAP.md`](BOOTSTRAP.md) · [`SECURITY_CHECK.md`](SECURITY_CHECK.md) · [`COST_PREDICTABILITY.md`](COST_PREDICTABILITY.md)
+Ordered ops. See also [`README.md`](README.md) · [`SECURITY_CHECK.md`](SECURITY_CHECK.md) · [`EXPLOIT_PATHS.md`](EXPLOIT_PATHS.md) · [`COST_PREDICTABILITY.md`](COST_PREDICTABILITY.md).
 
 ---
 
 ## A. Before any apply
 
-- [x] **Cost allocation tags** — `Application` + `Environment` are **Active** (Billing, Aug 8 2026)
-- [x] **`alert_email`** = `andreivataselu42@gmail.com` (global + dev + prod tfvars)
-- [x] **Repo public** — `andrei-vataselu/template` (no PAT needed in `app_git_url`)
-- [ ] **Stop using root** — deferred (optional). `andrei-cli` exists; keep using `andrei-login` for now. See [`BOOTSTRAP.md`](BOOTSTRAP.md) §9 when you want it
-- [x] **Re-auth AWS CLI** — `aws login --profile andrei-login`
+- [ ] Cost allocation tags `Application` + `Environment` **Active** (Billing)
+- [ ] `alert_email` set in global + env tfvars
+- [ ] AWS CLI: `aws login --profile andrei-login` (prefer IAM + MFA over root for daily use)
+- [ ] Copy `*.tfvars.example` → `*.tfvars` (domain, git URL, IP allowlist, budgets)
 
 ---
 
-## B. Account stack + remote state + DNS
+## B. Account stack + DNS
 
 ```bash
 aws login --profile andrei-login
-
-# Creates state bucket, CloudTrail, GuardDuty, Route 53, GitHub OIDC role
 ./scripts/tf-backend.sh bootstrap-global
-
-# Move global state into S3
 ./scripts/tf-backend.sh migrate global
-
 cd infra/global
 terraform output name_servers
 terraform output github_actions_role_arn
 terraform output tfstate_bucket
 ```
 
-- [x] **Global stack applied** — state bucket, CloudTrail, Route 53, GitHub OIDC role (GuardDuty off until AWS activates it)
-- [x] Namecheap → Domain → **Nameservers → Custom DNS** → Route 53 `awsdns-*` (verified via 8.8.8.8 / 1.1.1.1)
-- [ ] Verify from your PC: `nslookup -type=NS andrei-vataselu.online` shows `awsdns` (local ISP cache may lag)
-- [ ] Confirm SNS emails for **root-usage** topics (eu-west-1 + us-east-1) — check Gmail
-- [x] Save for GitHub Variables (§G): account `072160582391`, role `arn:aws:iam::072160582391:role/popo-github-terraform`
+- [ ] Global applied (state bucket, CloudTrail, Route 53, GitHub OIDC)
+- [ ] Registrar NS → Route 53 `awsdns-*`
+- [ ] Confirm SNS subscription emails (root-usage topics)
+- [ ] GitHub Actions Variables (§G)
 
 ---
 
-## C. Dev environment
+## C. Dev
 
-**Prep done:** applied via Actions. Confirm post-apply items below.
+- [ ] Apply via Actions → Terraform → `dev` × `apply`
+- [ ] Confirm budget / alarm / origin-rotate SNS emails
+- [ ] CloudFront console → attach **Free** flat-rate plan to the site distribution *(one-time manual AWS console step)*
+- [ ] From allowlisted IP: site, API health, and Cognito Hosted UI (`auth.dev.<domain>`) work
+- [ ] `-web` / `-app` ASGs private; ALB public; NAT OK; DB role `app` in use
 
-- [ ] Confirm SNS email for **budget / alarms** (after apply)
-- [ ] CloudFront console → attach **Free** flat-rate plan to `E1MGMAFLXSGBRB` / `dev.andrei-vataselu.online` (see BOOTSTRAP §10)
-- [ ] From allowlisted IP: `https://dev.andrei-vataselu.online` loads; `/api/health` → ok
+After this apply, **origin secret rotation is fully automatic** (no further action from you).
 
 ---
 
-## D. Day-2 operations
+## D. Day-2 (what runs by itself)
 
-| Task | How |
+| Automation | What happens |
 |---|---|
-| Local run | `cd deploy && cp .env.example .env && docker compose up --build` |
-| Zero-downtime **app** deploy | Actions → **Deploy frontend** / **Deploy backend**, or `./scripts/deploy.sh dev` |
-| **Infra** via pipeline | Actions → **Terraform** → `dev`/`prod` × plan/apply |
-| Scale (predictable) | Edit `asg_desired_capacity` (≤ `asg_max_size`) → apply |
-| Shell | SSM Session Manager (no SSH) |
-| Rotate origin secret | `terraform apply -replace=random_password.origin_header` then deploy |
-| Tear down **dev** | Actions → **Terraform destroy (dev only)** → type `destroy-dev` |
+| Origin secret (weekly) | EventBridge → Lambda: write SM `{current,previous}` → SSM sync on all ASG instances (recreates gateway) → update CloudFront headers → start rolling ASG refreshes → SNS email |
+| Origin secret (backup) | Cron every **1 minute** on each instance re-pulls SM and recreates gateway if changed |
+| App DB role | Terraform apply / password replace → ensure-app Lambda creates/updates Postgres `app` |
+| App deploys | Push to `main` touching `apps/frontend/**` or `apps/backend/**` → Actions roll the matching ASG |
+| Health / 4xx / CPU / RDS | CloudWatch alarms → SNS |
+
+| You still do (ops) | How |
+|---|---|
+| Local | `cd deploy && cp .env.example .env && docker compose up --build` |
+| Infra change | Actions → Terraform → `plan`/`apply` |
+| Scale | Edit `asg_desired_capacity` / `web_asg_*` → apply |
+| Shell | SSM Session Manager |
+| Tear down **dev** | Actions → destroy-dev |
 
 ---
 
 ## E. Before prod
 
-**Prep done:** local prod `terraform.tfvars`, `infra/backends/prod.hcl`, GitHub Environment `prod` with required reviewer `andrei-vataselu`. **Do not apply** until needed (~$110+/mo).
+Prod is ~$157–172/mo — do not apply until needed.
 
-- [x] GitHub Environment `prod` + required reviewers
-- [ ] Attach CloudFront **Pro** after prod apply (~$15/mo)
-- [ ] Wire API → RDS (app DB user + secret tagged `Application` / `Environment`)
+- [ ] GitHub Environment `prod` with required reviewers
+- [ ] Apply via Actions (approval gate)
+- [ ] Attach CloudFront **Pro** (~$15/mo) *(one-time console)*
 - [ ] Monthly RDS restore drill
-- [x] Do **not** apply prod until needed (~$110+/mo)
+
+Origin rotation, DB `app` role ensure, FE/BE deploys on `main`, and alarms stay automatic in prod the same as dev.
 
 ---
 
-## F. Still owed (non-blocking)
+## F. Optional later
 
-- [ ] CloudWatch agent for container logs (optional)
-- [ ] Pin Docker image digests in CI (optional)
-- [ ] Separate AWS account for prod (later)
-- [ ] Tighten GitHub Terraform role below `AdministratorAccess`
+- [ ] CloudWatch agent for container logs
+- [ ] Separate AWS account for prod
+- [ ] `require_mfa = true` on Cognito when UX allows
+- [ ] Second NAT for multi-AZ egress HA (~+$32/mo)
+- [ ] Re-pin image digests when bumping base images
 
 ---
 
-## G. GitHub Actions setup (after global apply)
+## G. GitHub Actions
 
 Repo → **Settings → Secrets and variables → Actions → Variables**:
 
-| Variable | Value |
+| Variable | Example |
 |---|---|
-| `AWS_ACCOUNT_ID` | `072160582391` ✅ set |
-| `AWS_ROLE_ARN` | `arn:aws:iam::072160582391:role/popo-github-terraform` ✅ set |
-| `ALERT_EMAIL` | `andreivataselu42@gmail.com` ✅ set |
-| `DOMAIN_NAME` | `andrei-vataselu.online` ✅ set |
-| `APP_GIT_URL` | `https://github.com/andrei-vataselu/template.git` ✅ set |
+| `AWS_ACCOUNT_ID` | account id |
+| `AWS_ROLE_ARN` | `arn:aws:iam::<account>:role/popo-github-terraform` |
+| `AWS_DEPLOY_ROLE_ARN` | `arn:aws:iam::<account>:role/popo-github-deploy` (FE/BE ASG roll) |
+| `ALERT_EMAIL` | ops inbox |
+| `DOMAIN_NAME` | apex domain |
+| `APP_GIT_URL` | `https://github.com/<org>/<repo>.git` |
 
-Environments: `dev` + `prod` (prod has **required reviewer** `andrei-vataselu`).
+Environments: `dev`, `prod` (prod = required reviewer).
 
-Workflow is on `main` and **active**.
-
-| Workflow | How |
+| Workflow | Use |
 |---|---|
-| [Terraform](.github/workflows/terraform.yml) | Run → `dev`/`prod` × `plan`/`apply` |
-| [Deploy frontend](.github/workflows/deploy-frontend.yml) | **Auto** on push to `main` touching `apps/frontend/**`; manual for prod |
-| [Deploy backend](.github/workflows/deploy-backend.yml) | **Auto** on push to `main` touching `apps/backend/**`; manual for prod |
-| [Terraform destroy (dev only)](.github/workflows/terraform-destroy-dev.yml) | Run → type `destroy-dev` |
+| [Terraform](.github/workflows/terraform.yml) | `dev`/`prod` × `plan`/`apply` |
+| [Deploy frontend](.github/workflows/deploy-frontend.yml) | Auto on `main` for `apps/frontend/**`; manual for prod |
+| [Deploy backend](.github/workflows/deploy-backend.yml) | Auto on `main` for `apps/backend/**`; manual for prod |
+| [Terraform destroy (dev only)](.github/workflows/terraform-destroy-dev.yml) | Type `destroy-dev` |
 
-`main` = **dev** environment. Prod deploys stay manual (`workflow_dispatch` + `prod` Environment approval).
+`main` deploys target **dev**. Prod stays `workflow_dispatch` + Environment approval.
 
-State: `s3://popo-tfstate-<ACCOUNT_ID>/{dev,prod}/terraform.tfstate` (global is account bootstrap, not these workflows).
+State: `s3://popo-tfstate-<ACCOUNT_ID>/{dev,prod}/terraform.tfstate`

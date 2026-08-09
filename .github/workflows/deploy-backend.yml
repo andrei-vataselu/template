@@ -42,7 +42,8 @@ jobs:
       - name: Configure AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          # Prefer least-privilege deploy role; fall back to terraform role for older setups.
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN != '' && vars.AWS_DEPLOY_ROLE_ARN || vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Resolve environment
@@ -54,7 +55,17 @@ jobs:
             echo "name=${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Roll ASG (zero-downtime refresh)
+      - name: Pin app git SHA (SSM)
+        run: |
+          # user_data reads /popo/<env>/app-git-sha at boot (H3).
+          # Terraform seeds the parameter; deploys own the value thereafter.
+          aws ssm put-parameter \
+            --name "/${{ env.PROJECT_NAME }}/${{ steps.env.outputs.name }}/app-git-sha" \
+            --value "${{ github.sha }}" \
+            --type String \
+            --overwrite
+
+      - name: Roll API ASG (zero-downtime refresh)
         run: |
           chmod +x .github/scripts/asg-roll.sh
           .github/scripts/asg-roll.sh \
