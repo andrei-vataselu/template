@@ -339,11 +339,13 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections" {
 data "aws_region" "current" {}
 
 locals {
+  # Both branches must be the same tuple shape (Terraform conditional typing).
   web_host_metrics = var.enable_web_alarms && var.web_target_group_arn_suffix != "" ? [
     ["AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", var.web_target_group_arn_suffix, "LoadBalancer", var.alb_arn_suffix, { label = "healthy", color = "#2ca02c" }],
     [".", "UnHealthyHostCount", ".", ".", ".", ".", { label = "unhealthy", color = "#d62728" }],
   ] : [
-    ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", var.alb_arn_suffix, { label = "web TG not configured", visible = false }],
+    ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", var.alb_arn_suffix, { label = "web TG n/a", visible = false }],
+    ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", var.alb_arn_suffix, { label = "web TG n/a", visible = false }],
   ]
 
   asg_cpu_metrics = concat(
