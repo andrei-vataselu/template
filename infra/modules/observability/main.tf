@@ -339,14 +339,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections" {
 data "aws_region" "current" {}
 
 locals {
-  # Both branches must be the same tuple shape (Terraform conditional typing).
-  web_host_metrics = var.enable_web_alarms && var.web_target_group_arn_suffix != "" ? [
-    ["AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", var.web_target_group_arn_suffix, "LoadBalancer", var.alb_arn_suffix, { label = "healthy", color = "#2ca02c" }],
-    [".", "UnHealthyHostCount", ".", ".", ".", ".", { label = "unhealthy", color = "#d62728" }],
-  ] : [
-    ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", var.alb_arn_suffix, { label = "web TG n/a", visible = false }],
-    ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", var.alb_arn_suffix, { label = "web TG n/a", visible = false }],
-  ]
+  web_tg = var.web_target_group_arn_suffix != "" ? var.web_target_group_arn_suffix : var.target_group_arn_suffix
 
   asg_cpu_metrics = concat(
     [
@@ -475,7 +468,10 @@ resource "aws_cloudwatch_dashboard" "main" {
           stacked = false
           period  = 60
           stat    = "Average"
-          metrics = local.web_host_metrics
+          metrics = [
+            ["AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", local.web_tg, "LoadBalancer", var.alb_arn_suffix, { label = "healthy", color = "#2ca02c" }],
+            [".", "UnHealthyHostCount", ".", ".", ".", ".", { label = "unhealthy", color = "#d62728" }],
+          ]
         }
       },
       {
