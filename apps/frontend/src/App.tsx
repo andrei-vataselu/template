@@ -366,34 +366,13 @@ export default function App() {
   if (path === "/callback") return <CallbackPage />;
   if (path === "/logout") return <LogoutPage />;
   if (path === "/login") {
-    return (
-      <AuthShell
-        initialMode="signin"
-        onAuthenticated={() => {
-          window.location.assign("/");
-        }}
-      />
-    );
+    return <AuthShell screen="login" />;
   }
   if (path === "/signup") {
-    return (
-      <AuthShell
-        initialMode="signup"
-        onAuthenticated={() => {
-          window.location.assign("/");
-        }}
-      />
-    );
+    return <AuthShell screen="signup" />;
   }
   if (path === "/forgot-password") {
-    return (
-      <AuthShell
-        initialMode="forgot"
-        onAuthenticated={() => {
-          window.location.assign("/");
-        }}
-      />
-    );
+    return <AuthShell screen="forgotPassword" />;
   }
   return <HomePage />;
 }

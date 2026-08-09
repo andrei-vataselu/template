@@ -36,12 +36,20 @@ resource "aws_cognito_user_pool" "this" {
   }
 
   dynamic "email_configuration" {
-    for_each = local.use_ses ? [1] : []
+    for_each = local.use_ses_mail ? [1] : []
     content {
-      email_sending_account = "DEVELOPER"
-      source_arn            = aws_ses_domain_identity.mail[0].arn
-      from_email_address    = var.from_email_address
+      email_sending_account  = "DEVELOPER"
+      source_arn             = aws_ses_domain_identity.mail[0].arn
+      from_email_address     = var.from_email_address
       reply_to_email_address = var.reply_to_email_address != "" ? var.reply_to_email_address : null
+    }
+  }
+
+  # Until SES leaves the sandbox, Cognito's default mailer can reach any inbox.
+  dynamic "email_configuration" {
+    for_each = local.use_ses_mail ? [] : [1]
+    content {
+      email_sending_account = "COGNITO_DEFAULT"
     }
   }
 
@@ -54,6 +62,25 @@ resource "aws_cognito_user_pool" "this" {
     aws_ses_identity_policy.cognito,
     aws_ses_domain_identity_verification.mail,
   ]
+}
+
+resource "aws_cognito_user_pool_ui_customization" "this" {
+  user_pool_id = aws_cognito_user_pool.this.id
+  client_id    = aws_cognito_user_pool_client.spa.id
+
+  css = <<-CSS
+    .banner-customizable { background: linear-gradient(160deg, #f7f3ea 0%, #e7efe8 100%); }
+    .logo-customizable { max-width: 8rem; }
+    .label-customizable { font-weight: 700; color: #0f3d30; }
+    .inputField-customizable { border-radius: 0; border-color: rgba(18,32,28,0.18); }
+    .submitButton-customizable { background-color: #0f3d30; border-color: #0f3d30; border-radius: 0; font-weight: 700; }
+    .submitButton-customizable:hover { background-color: #1f6f54; border-color: #1f6f54; }
+    .redirect-customizable, .legalText-customizable { color: #0f3d30; }
+    .background-customizable { background: #f3efe4; }
+    .idpDescription-customizable, .idpButton-customizable { border-radius: 0; }
+  CSS
+
+  depends_on = [aws_cognito_user_pool_domain.this]
 }
 
 resource "aws_cognito_user_pool_client" "spa" {
@@ -92,6 +119,9 @@ resource "random_id" "suffix" {
 locals {
   use_custom_domain = var.custom_auth_domain != ""
   use_ses           = var.ses_email_domain != ""
+  # SES domain can be verified while the account is still in sandbox; Cognito
+  # DEVELOPER sends only work to verified recipients until production access.
+  use_ses_mail = local.use_ses && var.ses_cognito_mail_enabled
 }
 
 # ---------------------------------------------------------------------------

@@ -96,6 +96,8 @@ module "cognito" {
   ses_email_domain         = var.domain_name
   from_email_address       = var.domain_name != "" ? "noreply@${var.domain_name}" : ""
   reply_to_email_address   = var.alert_email
+  # Flip to true after SES production access is approved
+  ses_cognito_mail_enabled = false
   callback_urls = concat(
     var.domain_name != "" ? ["https://${local.site_fqdn}/callback"] : [],
     var.domain_name != "" ? ["https://www.${var.domain_name}/callback"] : [],

@@ -28,6 +28,9 @@ export type IdTokenClaims = {
   exp?: number;
 };
 
+/** Cognito Hosted UI screens — auth logic lives entirely in Cognito. */
+export type CognitoAuthScreen = "login" | "signup" | "forgotPassword";
+
 function decodeJwtPayload(token: string): Record<string, unknown> {
   const part = token.split(".")[1];
   if (!part) throw new Error("Malformed JWT");
@@ -69,7 +72,11 @@ export function isAuthConfigured(): boolean {
   return loadCognitoConfig() !== null;
 }
 
-export async function beginLogin(): Promise<void> {
+/**
+ * Hand the browser to Cognito Hosted UI (HTTPS).
+ * The SPA only starts PKCE + handles /callback — passwords never touch our servers.
+ */
+export async function beginAuth(screen: CognitoAuthScreen = "login"): Promise<void> {
   const cfg = loadCognitoConfig();
   if (!cfg) throw new Error("Cognito is not configured");
 
@@ -90,7 +97,11 @@ export async function beginLogin(): Promise<void> {
     code_challenge: challenge,
   });
 
-  window.location.assign(`${cfg.hostedUiBase}/oauth2/authorize?${params.toString()}`);
+  window.location.assign(`${cfg.hostedUiBase}/${screen}?${params.toString()}`);
+}
+
+export async function beginLogin(): Promise<void> {
+  return beginAuth("login");
 }
 
 export async function completeLogin(url: URL = new URL(window.location.href)): Promise<StoredSession> {
@@ -115,7 +126,6 @@ export async function completeLogin(url: URL = new URL(window.location.href)): P
     clearPendingAuth();
     throw new Error("Invalid OAuth state");
   }
-  // Pending auth older than 10 minutes is rejected (CSRF / abandoned flow).
   if (Date.now() - pending.createdAt > 10 * 60 * 1000) {
     clearPendingAuth();
     throw new Error("Login session expired; try again");
@@ -163,7 +173,6 @@ export async function refreshSession(): Promise<StoredSession | null> {
   }
 }
 
-/** Returns a valid access token, refreshing if within 60s of expiry. */
 export async function getValidAccessToken(): Promise<string | null> {
   let session = loadSession();
   if (!session) return null;

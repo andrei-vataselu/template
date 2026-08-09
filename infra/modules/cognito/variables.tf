@@ -48,6 +48,11 @@ variable "reply_to_email_address" {
   type        = string
   default     = ""
 }
+variable "ses_cognito_mail_enabled" {
+  description = "Send Cognito mail via SES (noreploy@domain). Requires SES production access (sandbox can only mail verified recipients)."
+  type        = bool
+  default     = false
+}
 variable "tags" {
   type    = map(string)
   default = {}
