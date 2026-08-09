@@ -4,16 +4,18 @@ data "aws_ssm_parameter" "al2023_arm" {
 
 locals {
   user_data = base64encode(templatefile("${path.module}/user_data.sh.tftpl", {
-    origin_secret_arn         = var.origin_secret_arn
-    db_secret_arn             = var.db_secret_arn
-    db_name                   = var.db_name
-    environment               = var.environment
-    app_git_url               = var.app_git_url
-    cognito_region            = var.cognito_region
-    cognito_user_pool_id      = var.cognito_user_pool_id
-    cognito_spa_client_id     = var.cognito_spa_client_id
-    cognito_hosted_ui_domain  = var.cognito_hosted_ui_domain
-    bootstrap_admin_emails    = var.bootstrap_admin_emails
+    origin_secret_arn        = var.origin_secret_arn
+    db_secret_arn            = var.db_secret_arn
+    db_host                  = var.db_host
+    db_port                  = var.db_port
+    db_name                  = var.db_name
+    environment              = var.environment
+    app_git_url              = var.app_git_url
+    cognito_region           = var.cognito_region
+    cognito_user_pool_id     = var.cognito_user_pool_id
+    cognito_spa_client_id    = var.cognito_spa_client_id
+    cognito_hosted_ui_domain = var.cognito_hosted_ui_domain
+    bootstrap_admin_emails   = var.bootstrap_admin_emails
   }))
 
   # Use HTTPS listener when we have a custom origin hostname + ACM cert

@@ -129,6 +129,8 @@ module "compute" {
   root_volume_gb           = var.root_volume_gb
   origin_secret_arn        = aws_secretsmanager_secret.origin_header.arn
   db_secret_arn            = module.database.master_user_secret_arn
+  db_host                  = module.database.db_endpoint
+  db_port                  = module.database.db_port
   cognito_region           = var.aws_region
   cognito_user_pool_id     = module.cognito.user_pool_id
   cognito_user_pool_arn    = module.cognito.user_pool_arn

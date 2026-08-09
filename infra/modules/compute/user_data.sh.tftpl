@@ -61,16 +61,16 @@ ORIGIN_HEADER_VALUE=$(aws secretsmanager get-secret-value \
   --region "$AWS_REGION" \
   --query SecretString --output text)
 
-# RDS master secret (JSON) → DATABASE_URL (password never baked into Terraform state of the app)
+# RDS managed master secret is often ONLY {username,password} — host/port/db come from Terraform.
 DB_SECRET_JSON=$(aws secretsmanager get-secret-value \
   --secret-id "${db_secret_arn}" \
   --region "$AWS_REGION" \
   --query SecretString --output text)
 DB_USER=$(printf '%s' "$DB_SECRET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["username"])')
 DB_PASS=$(printf '%s' "$DB_SECRET_JSON" | python3 -c 'import json,sys,urllib.parse; print(urllib.parse.quote(json.load(sys.stdin)["password"], safe=""))')
-DB_HOST=$(printf '%s' "$DB_SECRET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["host"])')
-DB_PORT=$(printf '%s' "$DB_SECRET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("port", 5432))')
-DB_NAME=$(printf '%s' "$DB_SECRET_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("dbname") or d.get("database") or "${db_name}")')
+DB_HOST="${db_host}"
+DB_PORT="${db_port}"
+DB_NAME="${db_name}"
 DATABASE_URL="postgres://$${DB_USER}:$${DB_PASS}@$${DB_HOST}:$${DB_PORT}/$${DB_NAME}?sslmode=require"
 
 # AWS runtime: use RDS only (compose `db` service is local-profile)

@@ -23,6 +23,14 @@ variable "db_secret_arn" {
   type        = string
   sensitive   = true
 }
+variable "db_host" {
+  description = "RDS hostname (managed secrets often omit host — only username/password)."
+  type        = string
+}
+variable "db_port" {
+  type    = number
+  default = 5432
+}
 variable "db_name" {
   type    = string
   default = "app"
