@@ -103,6 +103,7 @@ module "compute" {
 
   project_name             = var.project_name
   environment              = var.environment
+  vpc_id                   = module.networking.vpc_id
   subnet_ids               = module.networking.public_subnet_ids
   alb_security_group_id    = module.security_groups.alb_security_group_id
   app_security_group_id    = module.security_groups.app_security_group_id

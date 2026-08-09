@@ -1,5 +1,9 @@
 variable "project_name" { type = string }
 variable "environment" { type = string }
+variable "vpc_id" {
+  description = "VPC for ALB target group (pass explicitly — subnet data lookups can defer and force TG replace)"
+  type        = string
+}
 variable "subnet_ids" {
   description = "Public subnet IDs across >=2 AZs (ALB + ASG)"
   type        = list(string)

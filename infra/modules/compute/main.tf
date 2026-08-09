@@ -117,9 +117,10 @@ resource "aws_iam_role_policy" "cognito_admin" {
 # ---------------------------------------------------------------------------
 
 resource "aws_launch_template" "app" {
-  name_prefix   = "${var.project_name}-${var.environment}-app-"
-  image_id      = data.aws_ssm_parameter.al2023_arm.value
-  instance_type = var.instance_type
+  name_prefix            = "${var.project_name}-${var.environment}-app-"
+  update_default_version = true
+  image_id               = data.aws_ssm_parameter.al2023_arm.value
+  instance_type          = var.instance_type
 
   iam_instance_profile {
     name = aws_iam_instance_profile.app.name
@@ -180,7 +181,9 @@ resource "aws_lb_target_group" "app" {
   name     = "${var.project_name}-${var.environment}-app"
   port     = 80
   protocol = "HTTP"
-  vpc_id   = data.aws_subnet.first.vpc_id
+  # Pass vpc_id explicitly — looking it up via subnet data can defer to apply and
+  # mark vpc_id unknown, which forces a needless TG replace (name collision).
+  vpc_id = var.vpc_id
 
   health_check {
     enabled             = true
@@ -198,10 +201,6 @@ resource "aws_lb_target_group" "app" {
   tags = merge(var.tags, {
     Name = "${var.project_name}-${var.environment}-app-tg"
   })
-}
-
-data "aws_subnet" "first" {
-  id = var.subnet_ids[0]
 }
 
 resource "aws_autoscaling_group" "app" {
