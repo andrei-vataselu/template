@@ -616,6 +616,16 @@ resource "aws_iam_role_policy" "github_deploy" {
           "ec2:DescribeInstanceStatus",
         ]
         Resource = "*"
+      },
+      {
+        Sid    = "PinAppGitSha"
+        Effect = "Allow"
+        Action = [
+          "ssm:PutParameter",
+          "ssm:GetParameter",
+          "ssm:AddTagsToResource",
+        ]
+        Resource = "arn:aws:ssm:*:${local.account_id}:parameter/${var.project_name}/*/app-git-sha"
       }
     ]
   })

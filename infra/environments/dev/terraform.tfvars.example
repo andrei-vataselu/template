@@ -24,10 +24,9 @@ app_git_url              = "https://github.com/OWNER/REPO.git"
 # Deploy workflows overwrite this parameter with github.sha before ASG rolls.
 # app_git_sha              = ""
 domain_name              = "your-domain.tld"
-# Lock dev to your IP(s). Get yours: curl https://checkip.amazonaws.com
-allowed_ip_cidrs         = ["YOUR_IP/32"]
-# Cognito custom domain is dual-stack — prefer a host /128; use /64 only if the prefix churns.
-allowed_ipv6_cidrs       = ["YOUR_IPV6_ADDRESS/128"]
+allowed_ip_cidrs         = []
+# Cognito custom domain is dual-stack — set host /128 via CI var ALLOWED_IPV6_CIDRS (or leave empty).
+allowed_ipv6_cidrs       = []
 asg_min_size             = 1
 asg_desired_capacity     = 1
 asg_max_size             = 2
