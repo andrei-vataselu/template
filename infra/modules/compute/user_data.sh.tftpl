@@ -71,7 +71,7 @@ DB_PASS=$(printf '%s' "$DB_SECRET_JSON" | python3 -c 'import json,sys,urllib.par
 DB_HOST="${db_host}"
 DB_PORT="${db_port}"
 DB_NAME="${db_name}"
-DATABASE_URL="postgres://$${DB_USER}:$${DB_PASS}@$${DB_HOST}:$${DB_PORT}/$${DB_NAME}?sslmode=require"
+DATABASE_URL="postgres://$${DB_USER}:$${DB_PASS}@$${DB_HOST}:$${DB_PORT}/$${DB_NAME}?uselibpqcompat=true&sslmode=require"
 
 # AWS runtime: use RDS only (compose `db` service is local-profile)
 cat >"$APP_DIR/.env" <<EOF

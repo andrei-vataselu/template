@@ -109,16 +109,23 @@ export class PostgresIdentityStore implements IdentityStore {
   private db: Db;
 
   constructor(databaseUrl: string) {
+    // node-pg treats sslmode=require as verify-full unless uselibpqcompat=true.
+    // Prefer explicit ssl config; strip conflicting sslmode from the URL.
+    const url = databaseUrl
+      .replace(/([?&])sslmode=[^&]*/gi, "$1")
+      .replace(/[?&]$/, "")
+      .replace(/\?&/, "?");
+    const wantSsl = process.env.DATABASE_SSL !== "0" && !/localhost|127\.0\.0\.1/i.test(url);
     this.pool = new pg.Pool({
-      connectionString: databaseUrl,
+      connectionString: url,
       max: 10,
-      ssl:
-        process.env.DATABASE_SSL === "0"
-          ? false
-          : {
-              // RDS uses Amazon CA; strict verify optional via DATABASE_SSL_STRICT=1
-              rejectUnauthorized: process.env.DATABASE_SSL_STRICT === "1",
-            },
+      ssl: wantSsl
+        ? {
+            // RDS presents Amazon CA; full verify needs the RDS CA bundle in the image.
+            // Encrypt in transit without pinning CA unless DATABASE_SSL_STRICT=1.
+            rejectUnauthorized: process.env.DATABASE_SSL_STRICT === "1",
+          }
+        : false,
     });
     this.db = drizzle(this.pool, { schema });
   }
