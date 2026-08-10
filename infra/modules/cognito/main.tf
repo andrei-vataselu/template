@@ -275,6 +275,10 @@ resource "aws_cognito_user_pool_domain" "this" {
   domain          = local.use_custom_domain ? var.custom_auth_domain : "${var.project_name}-${var.environment}-${random_id.suffix.hex}"
   user_pool_id    = aws_cognito_user_pool.this.id
   certificate_arn = local.use_custom_domain ? aws_acm_certificate_validation.auth[0].certificate_arn : null
+  # New pools default to Managed Login (v2). App clients created in Terraform do not
+  # get an auto-assigned branding style, so /login returns 403 until branding exists.
+  # Classic Hosted UI (v1) works with aws_cognito_user_pool_ui_customization below.
+  managed_login_version = 1
 
   depends_on = [aws_route53_record.cognito_parent_placeholder_a]
 }
