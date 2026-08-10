@@ -121,6 +121,15 @@ locals {
   # SES domain can be verified while the account is still in sandbox; Cognito
   # DEVELOPER sends only work to verified recipients until production access.
   use_ses_mail = local.use_ses && var.ses_cognito_mail_enabled
+
+  # Cognito CreateUserPoolDomain requires a resolvable A record on the parent
+  # of the custom domain (e.g. auth.dev.example.com → parent = dev.example.com).
+  # CloudFront later overwrites that name with an alias; Cognito only checks at create.
+  custom_auth_parent = local.use_custom_domain ? join(".", slice(
+    split(".", var.custom_auth_domain),
+    1,
+    length(split(".", var.custom_auth_domain)),
+  )) : ""
 }
 
 # ---------------------------------------------------------------------------
@@ -218,20 +227,23 @@ resource "aws_acm_certificate" "auth" {
 }
 
 resource "aws_route53_record" "auth_cert_validation" {
-  for_each = local.use_custom_domain ? {
-    for dvo in aws_acm_certificate.auth[0].domain_validation_options : dvo.domain_name => {
-      name   = dvo.resource_record_name
-      record = dvo.resource_record_value
-      type   = dvo.resource_record_type
-    }
-  } : {}
+  for_each = local.use_custom_domain ? toset([var.custom_auth_domain]) : toset([])
 
   allow_overwrite = true
-  name            = each.value.name
-  records         = [each.value.record]
-  ttl             = 60
-  type            = each.value.type
-  zone_id         = var.zone_id
+  name = one([
+    for dvo in aws_acm_certificate.auth[0].domain_validation_options : dvo.resource_record_name
+    if dvo.domain_name == each.key
+  ])
+  records = [one([
+    for dvo in aws_acm_certificate.auth[0].domain_validation_options : dvo.resource_record_value
+    if dvo.domain_name == each.key
+  ])]
+  ttl  = 60
+  type = one([
+    for dvo in aws_acm_certificate.auth[0].domain_validation_options : dvo.resource_record_type
+    if dvo.domain_name == each.key
+  ])
+  zone_id = var.zone_id
 }
 
 resource "aws_acm_certificate_validation" "auth" {
@@ -242,10 +254,29 @@ resource "aws_acm_certificate_validation" "auth" {
   validation_record_fqdns = [for r in aws_route53_record.auth_cert_validation : r.fqdn]
 }
 
+# Placeholder A so Cognito accepts the custom domain before CloudFront owns the parent name.
+resource "aws_route53_record" "cognito_parent_placeholder_a" {
+  count = local.use_custom_domain ? 1 : 0
+
+  zone_id         = var.zone_id
+  name            = local.custom_auth_parent
+  type            = "A"
+  ttl             = 60
+  records         = ["192.0.2.1"]
+  allow_overwrite = true
+
+  lifecycle {
+    # Site CloudFront alias overwrites this name after Cognito domain is created.
+    ignore_changes = [records, ttl, alias]
+  }
+}
+
 resource "aws_cognito_user_pool_domain" "this" {
   domain          = local.use_custom_domain ? var.custom_auth_domain : "${var.project_name}-${var.environment}-${random_id.suffix.hex}"
   user_pool_id    = aws_cognito_user_pool.this.id
   certificate_arn = local.use_custom_domain ? aws_acm_certificate_validation.auth[0].certificate_arn : null
+
+  depends_on = [aws_route53_record.cognito_parent_placeholder_a]
 }
 
 resource "aws_route53_record" "auth_a" {
