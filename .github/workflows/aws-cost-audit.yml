@@ -58,6 +58,17 @@ jobs:
           aws secretsmanager list-secrets --query 'SecretList[].Name' --output text || true
           echo "=== Route53 zones ==="
           aws route53 list-hosted-zones --query 'HostedZones[].[Name,Id,ResourceRecordSetCount]' --output table || true
+          echo "=== Route53 records ==="
+          zid=$(aws route53 list-hosted-zones --query 'HostedZones[?Name==`andrei-vataselu.online.`].Id' --output text | sed 's|/hostedzone/||')
+          if [ -n "$zid" ] && [ "$zid" != "None" ]; then
+            aws route53 list-resource-record-sets --hosted-zone-id "$zid" --query 'ResourceRecordSets[].[Name,Type,TTL]' --output table || true
+          fi
+          echo "=== ACM detail us-east-1 ==="
+          for arn in $(aws acm list-certificates --region us-east-1 --query 'CertificateSummaryList[].CertificateArn' --output text); do
+            aws acm describe-certificate --region us-east-1 --certificate-arn "$arn" \
+              --query 'Certificate.{Domain:DomainName,Status:Status,Validation:[DomainValidationOptions[].{Domain:DomainName,Status:ValidationStatus,Name:ResourceRecord.Name,Value:ResourceRecord.Value}]}' \
+              --output json || true
+          done
           echo "=== CloudTrail ==="
           aws cloudtrail describe-trails --query 'trailList[].[Name,S3BucketName]' --output table || true
           echo "=== S3 buckets ==="
