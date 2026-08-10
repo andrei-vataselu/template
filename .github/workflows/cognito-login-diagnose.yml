@@ -1,0 +1,65 @@
+name: Cognito login diagnose
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-west-1
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Diagnose Cognito domain + branding + WAF
+        env:
+          POOL: eu-west-1_VBIzU1Xvr
+          CLIENT: 750sgg873902m0dr5jnqqqo5p6
+          DOMAIN: auth.dev.andrei-vataselu.online
+        run: |
+          set -euo pipefail
+          echo "=== Domain ==="
+          aws cognito-idp describe-user-pool-domain --domain "$DOMAIN" --output json
+          echo "=== Managed login branding for client ==="
+          aws cognito-idp describe-managed-login-branding-by-client \
+            --user-pool-id "$POOL" --client-id "$CLIENT" --output json || echo "NO_BRANDING"
+          echo "=== WAF ACL ==="
+          aws wafv2 get-web-acl \
+            --scope REGIONAL \
+            --name popo-dev-cognito \
+            --id f4ef939e-c212-4373-b604-ea6d8356f98b \
+            --query 'WebACL.{Name:Name,Default:DefaultAction,Rules:Rules[].{Name:Name,Action:Action,Override:OverrideAction}}' \
+            --output json
+          echo "=== IP sets ==="
+          aws wafv2 get-ip-set --scope REGIONAL --name popo-dev-cognito-allowlist --id edcbc8a4-23c1-44e7-a222-5e71e4e02aef --query 'IPSet.Addresses' --output json || true
+          aws wafv2 get-ip-set --scope REGIONAL --name popo-dev-cognito-allowlist-v6 --id 37c50118-40e2-4fc5-b297-e5725d51a1cc --query 'IPSet.Addresses' --output json || true
+          echo "=== Fix: classic hosted UI + ensure branding ==="
+          CERT=$(aws cognito-idp describe-user-pool-domain --domain "$DOMAIN" --query 'DomainDescription.CustomDomainConfig.CertificateArn' --output text)
+          VER=$(aws cognito-idp describe-user-pool-domain --domain "$DOMAIN" --query 'DomainDescription.ManagedLoginVersion' --output text)
+          echo "current ManagedLoginVersion=$VER cert=$CERT"
+          if [ "$VER" != "1" ]; then
+            aws cognito-idp update-user-pool-domain \
+              --domain "$DOMAIN" \
+              --user-pool-id "$POOL" \
+              --managed-login-version 1 \
+              --custom-domain-config CertificateArn="$CERT"
+            echo "switched to classic (v1)"
+          fi
+          if ! aws cognito-idp describe-managed-login-branding-by-client --user-pool-id "$POOL" --client-id "$CLIENT" >/dev/null 2>&1; then
+            aws cognito-idp create-managed-login-branding \
+              --user-pool-id "$POOL" \
+              --client-id "$CLIENT" \
+              --use-cognito-provided-values || echo "branding create failed (ok if on classic)"
+          fi
+          echo "=== Domain after ==="
+          aws cognito-idp describe-user-pool-domain --domain "$DOMAIN" --query 'DomainDescription.{Status:Status,ManagedLoginVersion:ManagedLoginVersion,CloudFront:CloudFrontDistribution}' --output json
