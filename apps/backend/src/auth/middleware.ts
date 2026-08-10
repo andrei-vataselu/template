@@ -46,7 +46,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       return;
     }
 
-    const appUser = await syncUserFromAccessToken(token, identity.sub);
+    const appUser = await syncUserFromAccessToken(token, identity.sub, identity.username);
 
     if (appUser.status === "disabled") {
       res.status(403).json({

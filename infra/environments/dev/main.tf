@@ -185,7 +185,11 @@ module "cognito" {
     var.domain_name != "" ? ["https://${local.site_fqdn}/logout"] : [],
     ["http://localhost:5173/logout"]
   )
-  allowed_ip_cidrs   = var.allowed_ip_cidrs
+  allowed_ip_cidrs = concat(
+    var.allowed_ip_cidrs,
+    # App/NAT egress must reach Cognito Admin/GetUser APIs; pool WAF applies to those too.
+    module.networking.nat_public_ip != "" ? ["${module.networking.nat_public_ip}/32"] : [],
+  )
   allowed_ipv6_cidrs = var.allowed_ipv6_cidrs
   tags               = local.common_tags
 }

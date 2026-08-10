@@ -73,7 +73,11 @@ export function parseAssignableRoles(input: unknown): RoleName[] {
   return roles.length ? roles : ["member"];
 }
 
-async function resolveInitialRoles(cognitoSub: string, accessToken: string): Promise<RoleName[]> {
+async function resolveInitialRoles(
+  cognitoSub: string,
+  accessToken: string,
+  username?: string,
+): Promise<RoleName[]> {
   const store = getIdentityStore();
   const existing = await store.getByCognitoSub(cognitoSub);
   if (existing) return existing.roles;
@@ -89,8 +93,17 @@ async function resolveInitialRoles(cognitoSub: string, accessToken: string): Pro
 
   const emails = bootstrapAdminEmails();
   if (emails.size > 0) {
-    const profile = await getProfileFromAccessToken(accessToken);
-    if (emails.has(normalizeEmail(profile.email))) return ["admin"];
+    // Prefer email-shaped Cognito username (email alias pools) before calling GetUser.
+    if (username && username.includes("@") && emails.has(normalizeEmail(username))) {
+      return ["admin"];
+    }
+    try {
+      const profile = await getProfileFromAccessToken(accessToken);
+      if (emails.has(normalizeEmail(profile.email))) return ["admin"];
+    } catch (err) {
+      // Cognito pool WAF / IMDS issues must not 500 /api/me on first login.
+      console.warn("[identity] bootstrap email lookup failed; continuing as member", err);
+    }
   }
 
   return ["member"];
@@ -100,6 +113,7 @@ async function resolveInitialRoles(cognitoSub: string, accessToken: string): Pro
 export async function syncUserFromAccessToken(
   accessToken: string,
   cognitoSub: string,
+  username?: string,
 ): Promise<AppUser> {
   const store = getIdentityStore();
   const existing = await store.getByCognitoSub(cognitoSub);
@@ -109,7 +123,7 @@ export async function syncUserFromAccessToken(
 
   if (config.inviteOnly) {
     // Allow bootstrap admins through even when invite-only.
-    const initialRoles = await resolveInitialRoles(cognitoSub, accessToken);
+    const initialRoles = await resolveInitialRoles(cognitoSub, accessToken, username);
     if (!initialRoles.includes("admin")) {
       throw httpError("User is not invited", "not_invited", 403);
     }
@@ -120,7 +134,7 @@ export async function syncUserFromAccessToken(
     });
   }
 
-  const initialRoles = await resolveInitialRoles(cognitoSub, accessToken);
+  const initialRoles = await resolveInitialRoles(cognitoSub, accessToken, username);
   return store.upsertFromIdentity({
     cognitoSub,
     touchLogin: true,

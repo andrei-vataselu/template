@@ -211,9 +211,17 @@ function HomePage() {
         <div className="nav-actions">
           <p className="env-pill">{health?.environment ?? "…"}</p>
           {auth.status === "authenticated" ? (
-            <button type="button" className="btn ghost" onClick={() => auth.logout()}>
-              Sign out
-            </button>
+            <>
+              <p className="env-pill" title={auth.claims?.sub}>
+                {me?.identity.username ||
+                  auth.claims?.["cognito:username"] ||
+                  auth.claims?.email ||
+                  "Signed in"}
+              </p>
+              <button type="button" className="btn ghost" onClick={() => auth.logout()}>
+                Sign out
+              </button>
+            </>
           ) : auth.configured ? (
             <>
               {!isInviteOnly() ? (
@@ -298,6 +306,15 @@ function HomePage() {
             <p className="error">{meError}</p>
           ) : me ? (
             <ul>
+              <li>
+                <span>Username</span>
+                <strong>
+                  {me.identity.username ||
+                    auth.claims?.["cognito:username"] ||
+                    auth.claims?.email ||
+                    "—"}
+                </strong>
+              </li>
               <li>
                 <span>Cognito sub</span>
                 <strong className="mono">{me.user.cognitoSub}</strong>

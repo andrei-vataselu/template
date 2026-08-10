@@ -168,7 +168,10 @@ module "cognito" {
     var.domain_name != "" ? ["https://${local.site_fqdn}/logout"] : [],
     var.domain_name != "" ? ["https://www.${var.domain_name}/logout"] : [],
   )
-  allowed_ip_cidrs   = var.allowed_ip_cidrs
+  allowed_ip_cidrs = concat(
+    var.allowed_ip_cidrs,
+    module.networking.nat_public_ip != "" ? ["${module.networking.nat_public_ip}/32"] : [],
+  )
   allowed_ipv6_cidrs = var.allowed_ipv6_cidrs
   tags               = local.common_tags
 }

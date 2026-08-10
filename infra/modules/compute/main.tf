@@ -236,7 +236,8 @@ resource "aws_launch_template" "app" {
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"
-    http_put_response_hop_limit = 1
+    # Docker bridge adds a hop; hop_limit=1 blocks IMDSv2 credentials inside containers.
+    http_put_response_hop_limit = 2
   }
 
   credit_specification {
@@ -299,7 +300,8 @@ resource "aws_launch_template" "web" {
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"
-    http_put_response_hop_limit = 1
+    # Docker bridge adds a hop; hop_limit=1 blocks IMDSv2 credentials inside containers.
+    http_put_response_hop_limit = 2
   }
 
   credit_specification {
